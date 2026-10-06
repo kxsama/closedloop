@@ -89,10 +89,11 @@ gradle assembleDebug
 ## 路线图
 
 - [x] **M1** 核心闭环（Android + Windows 双端）
+- [x] **M5** 开源发布（本仓库 + Releases 分发）
 - [ ] **M2** 人格层：人格化催促（本地模板 → 可接入 OpenAI 兼容 API）
 - [ ] **M3** 账本完善：周报、未完成滚动管理
 - [ ] **M4** Android 16 Live Updates（渐进增强，低版本自动降级）
-- [ ] **M5** 应用内检查更新（GitHub Releases）
+- [ ] **M6** 应用内检查更新（读 GitHub Releases；国内网络备 Gitee / jsDelivr 兜底）
 
 ## 诚实区
 
