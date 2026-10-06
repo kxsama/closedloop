@@ -61,7 +61,7 @@
 
 Android：到 [Releases](../../releases) 下载最新 APK → 手机上安装（允许未知来源）→ 首次打开授权「**使用情况访问**」→ 这是检测的地基。
 
-Windows：`app/pc/setup.bat` 装依赖 → `app/pc/run.bat` 启动。
+Windows：先装 Python 3.10+（勾选 **Add Python to PATH**）→ 双击 `app/pc/setup.bat`（自动建虚拟环境 + 装依赖，失败会自动换清华镜像）→ 双击 `app/pc/run.bat` 启动。
 
 > Android 11+ 需要「使用情况访问」权限；国产 ROM 还需在系统设置里允许自启动，否则后台服务可能被清理（复盘里会出现「未观测」时段，不会被算成偏离）。
 
@@ -78,7 +78,7 @@ gradle assembleDebug
 
 产物在 `app/build/outputs/apk/debug/`。
 
-**Windows**（Python 3.13 + Tkinter/CustomTkinter）：见 `app/pc/README.md`。
+**Windows**（Python 3.10+，依赖见 `app/pc/requirements.txt`）：双击 `app/pc/setup.bat` 装环境，`run.bat` 启动；细节见 `app/pc/README.md`。
 
 ## 隐私
 

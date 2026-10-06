@@ -1,0 +1,7 @@
+# 闭环 · Windows 版依赖（Python 3.10+）
+# tkinter / winsound 是 Python 标准库，无需安装
+
+customtkinter>=5.2.0   # 圆角卡片 UI
+pillow>=10.0.0         # 截图与图标处理
+psutil>=5.9.0          # 进程枚举
+pywin32>=306           # 前台窗口检测（win32gui / win32process）+ 键鼠空闲检测
