@@ -1,0 +1,8 @@
+# 统一换行：bat 必须 CRLF（LF 会导致 cmd.exe 解析错位、双击闪退）
+* text=auto
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+*.apk binary
+*.keystore binary
+*.jks binary

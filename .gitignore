@@ -1,0 +1,23 @@
+# ---------- 隐私：绝不入库 ----------
+.workbuddy/
+
+# ---------- PC 版（Python） ----------
+app/pc/venv/
+app/pc/data/
+__pycache__/
+*.pyc
+*.log
+
+# ---------- Android ----------
+app/android/.gradle/
+app/android/build/
+app/android/app/build/
+app/android/local.properties
+app/android/.idea/
+*.iml
+
+# ---------- 签名与产物（密钥永不入库；APK 走 Releases 分发） ----------
+*.keystore
+*.jks
+*.apk
+*.aab

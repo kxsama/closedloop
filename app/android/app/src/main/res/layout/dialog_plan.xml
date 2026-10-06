@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <EditText
+        android:id="@+id/editName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:hint="计划名称（留空则用应用名）"
+        android:inputType="text"
+        android:padding="10dp"
+        android:textColorHint="#B4B2A9"
+        android:textSize="15sp" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#ECE9E2" />
+
+    <Button
+        android:id="@+id/btnTime"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:background="@drawable/bg_btn_outline"
+        android:text="开始时间"
+        android:textColor="#1F1E1B" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="时长"
+        android:textColor="#6B6A66"
+        android:textSize="11sp" />
+
+    <NumberPicker
+        android:id="@+id/pickerDur"
+        android:layout_width="match_parent"
+        android:layout_height="120dp" />
+
+    <!-- 常驻占位（invisible 而非 gone）：滑到「自定义」时布局不跳动 -->
+    <EditText
+        android:id="@+id/editCustom"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="自定义分钟数（1-999）"
+        android:inputType="number"
+        android:textColorHint="#B4B2A9"
+        android:visibility="invisible" />
+
+    <Button
+        android:id="@+id/btnApps"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/bg_btn_outline"
+        android:text="选择关联应用"
+        android:textColor="#1F1E1B" />
+</LinearLayout>

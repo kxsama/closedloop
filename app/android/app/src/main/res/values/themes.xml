@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ClosedLoop" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorAccent">#22A06B</item>
+        <item name="android:windowBackground">#F6F6F4</item>
+        <item name="android:statusBarColor">#F6F6F4</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
