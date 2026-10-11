@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import androidx.core.app.NotificationCompat
 
@@ -18,6 +20,18 @@ object Notify {
     private const val COLOR_OK = 0xFF22A06B.toInt()
     private const val COLOR_WARN = 0xFFE8A13A.toInt()
     private const val COLOR_DANGER = 0xFFD64545.toInt()
+
+    /** 彩色大图（通知正文右侧 + 下拉/展开里的那个）。
+     *  状态栏小图标只能走 alpha 剪影（系统限制），彩色要靠 largeIcon 呈现。 */
+    @Volatile
+    private var largeIconCache: Bitmap? = null
+
+    private fun largeIcon(ctx: Context): Bitmap? {
+        largeIconCache?.let { return it }
+        return BitmapFactory.decodeResource(ctx.resources, R.mipmap.ic_launcher)?.also {
+            largeIconCache = it
+        }
+    }
 
     private fun manager(ctx: Context) =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -56,6 +70,7 @@ object Notify {
     fun remind(ctx: Context, planId: Int, title: String, text: String) {
         val n = NotificationCompat.Builder(ctx, CH_REMIND)
             .setSmallIcon(R.drawable.ic_notify)
+            .setLargeIcon(largeIcon(ctx))
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -88,6 +103,7 @@ object Notify {
         val progress = if (targetSec > 0) (effectiveSec * 100 / targetSec).toInt() else 0
         val n = NotificationCompat.Builder(ctx, CH_NAG)
             .setSmallIcon(R.drawable.ic_notify)
+            .setLargeIcon(largeIcon(ctx))
             .setContentTitle(title)
             .setContentText(text)
             .setColor(color)

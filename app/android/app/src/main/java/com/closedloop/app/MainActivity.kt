@@ -85,7 +85,10 @@ class MainActivity : AppCompatActivity() {
         reviewView = findViewById(R.id.review)
         dateView = findViewById(R.id.dateView)
         findViewById<Button>(R.id.btnNew).setOnClickListener { showNewPlanDialog() }
-        findViewById<TextView>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
+        findViewById<TextView>(R.id.btnUpdate).apply {
+            setOnClickListener { checkUpdate() }
+            text = updateBtnLabel()
+        }
 
         Notify.ensureChannels(this)
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -553,18 +556,27 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- 应用内更新（M6） ----------
 
+    /** 按钮上常驻显示当前版本——免得出现"我到底装的是哪版"的扯皮 */
+    private fun updateBtnLabel(): String = "v${localVersion()} · 更新"
+
+    private fun localVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (_: Exception) {
+        "?"
+    }
+
     private fun checkUpdate() {
         val btn = findViewById<TextView>(R.id.btnUpdate)
         btn.text = "检查中…"
         Thread {
             val rel = Updater.check()
             runOnUiThread {
-                btn.text = "检查更新"
+                btn.text = updateBtnLabel()
                 when {
                     rel == null ->
                         Toast.makeText(this, "检查失败：网络不通或 GitHub 访问受限", Toast.LENGTH_LONG).show()
                     !Updater.newerThan(rel.versionName, Updater.localVersionName(this)) ->
-                        Toast.makeText(this, "已是最新版（${rel.tag}）", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "已是最新版｜当前 v${localVersion()}", Toast.LENGTH_SHORT).show()
                     else -> showUpdateDialog(rel)
                 }
             }
@@ -574,7 +586,7 @@ class MainActivity : AppCompatActivity() {
     private fun showUpdateDialog(rel: Updater.Release) {
         val msg = (rel.title + "\n\n" + rel.notes).trim().take(400)
         AlertDialog.Builder(this)
-            .setTitle("发现新版本 ${rel.tag}")
+            .setTitle("发现新版本 ${rel.tag}（当前 v${localVersion()}）")
             .setMessage(msg.ifBlank { "下载后可直接覆盖安装，数据不会丢。" })
             .setPositiveButton("下载并安装") { _, _ -> downloadUpdate(rel) }
             .setNegativeButton("以后再说", null)
