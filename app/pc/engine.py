@@ -153,8 +153,12 @@ class Engine:
                         acts.append({"type": "cooldown_exit"})
                     acts.append({"type": "deviation_end"})
                 else:
-                    # 宽限内的毛刺（<60s）：整段补记为有效，偏离从未发生
-                    s.effective_sec += now - s.cur_dev_start
+                    # 宽限内的毛刺（<60s）：整段补记为有效，偏离从未发生——
+                    # 但前提是"已经开始过"（本段偏离之前已有有效时长）。
+                    # 若 effective_sec == 0，这是"到点没开始"而不是中途毛刺，不能补记；
+                    # 否则"晚到 1 分钟"会被宽限规则错误地整段记为有效（v0.4 真机实测抓出）。
+                    if s.effective_sec > 0:
+                        s.effective_sec += now - s.cur_dev_start
                     s.cur_dev_start = None
             s.effective_sec += delta
         else:

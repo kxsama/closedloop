@@ -168,8 +168,12 @@ class Engine(
                     }
                     acts.add(Act.DeviationEnd)
                 } else {
-                    // 宽限内的毛刺：整段补记为有效
-                    s.effectiveSec += now - devStart
+                    // 宽限内的毛刺：整段补记为有效——但前提是"已经开始过"（本段偏离之前有有效时长）。
+                    // 若 effectiveSec == 0，这是"到点没开始"而不是中途毛刺，不能补记；
+                    // 否则"晚到 1 分钟"会被宽限规则错误地整段记为有效（v0.4 实测抓出）。
+                    if (s.effectiveSec > 0) {
+                        s.effectiveSec += now - devStart
+                    }
                     s.curDevStart = null
                 }
             }

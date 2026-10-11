@@ -8,7 +8,8 @@ import datetime as dt
 
 from engine import (COOLDOWN, DONE, EARLY_END, RUNNING, Engine, Plan)
 
-T0 = dt.datetime(2026, 10, 5, 15, 0, 0).timestamp()
+# T0 必须锚定"今天 15:00"——引擎按真实日期计算开始时间，写死日期过几天就全挂
+T0 = dt.datetime.now().replace(hour=15, minute=0, second=0, microsecond=0).timestamp()
 GOOD = {"proc": "notepad.exe", "title": ""}
 BAD = {"proc": "chrome.exe", "title": ""}
 
@@ -124,5 +125,17 @@ s = eng.session
 assert s.deviation_count == 0
 assert abs(s.effective_sec - 540) <= 15, s.effective_sec   # 锁屏段未计
 print("8 未观测处理 OK")
+
+# 9. 晚到 <60 秒不补记：到点没开始 ≠ 中途毛刺（v0.4 真机实测抓出的回归）
+def fg9(t):
+    return BAD if t < T0 + 57 else GOOD
+
+eng = Engine(make_plan(10))
+run(eng, 600, fg9)
+s = eng.session
+assert s.deviation_count == 0 and s.deviation_sec == 0, (s.deviation_count, s.deviation_sec)
+# 正确：只从第 57 秒进来后开始计时（≈540s）；若宽限误补记会多 60s（≈600s）
+assert s.effective_sec <= 555, s.effective_sec
+print("9 晚到不补记 OK")
 
 print("\n全部通过")
