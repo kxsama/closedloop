@@ -617,7 +617,7 @@ class MainActivity : AppCompatActivity() {
             .show()
         dlg.setOnDismissListener { cancelled = true }
         Thread {
-            val f = Updater.download(this, rel) { done, total ->
+            val f = Updater.download(this, rel, { done, total ->
                 runOnUiThread {
                     bar.isIndeterminate = total <= 0
                     if (total > 0) {
@@ -628,14 +628,16 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 !cancelled
-            }
+            }, { src ->
+                runOnUiThread { status.text = "正在连接 $src…" }
+            })
             runOnUiThread {
                 dlg.setOnDismissListener(null)
                 dlg.dismiss()
                 when {
                     cancelled -> Unit
                     f == null ->
-                        Toast.makeText(this, "下载失败：直连和镜像都不通，换个网络再试", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "下载失败：镜像和直连都不通，换个网络再试", Toast.LENGTH_LONG).show()
                     Updater.canInstall(this) -> {
                         if (!Updater.install(this, f)) {
                             Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()

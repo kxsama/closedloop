@@ -18,12 +18,30 @@ object Updater {
     private const val REPO = "kxsama/closedloop"
     private const val API = "https://api.github.com/repos/$REPO/releases/latest"
 
-    /** 依次尝试的源前缀：直连 GitHub + 国内镜像兜底。API 与 APK 下载共用。 */
-    private val SOURCES = listOf(
+    /** API 用源：直连优先——JSON 才 5KB，直连通常 1s 内返回；镜像作兜底。
+     *  （实测国内：直连 200/1.1s，gh-proxy 200/1.2s，ghproxy.net 对 api 返回 403） */
+    private val API_SOURCES = listOf(
         "",
         "https://gh-proxy.com/",
         "https://ghproxy.net/",
     )
+
+    /** APK 下载用源：镜像优先——3.4MB 的包，国内直连 github.com 实测只有 ~14 KB/s
+     *  （要跑 4 分钟，用户会以为卡死），gh-proxy 能到 ~200 KB/s、16 秒下完。
+     *  直连降为最后兜底（境外网络/镜像全挂时还有一条路）。 */
+    private val DL_SOURCES = listOf(
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+        "",
+    )
+
+    /** 源前缀 -> 人话名，用于进度框显示当前走的哪条线。 */
+    fun sourceLabel(prefix: String): String = when {
+        prefix.isEmpty() -> "GitHub 直连"
+        prefix.contains("gh-proxy") -> "镜像 gh-proxy.com"
+        prefix.contains("ghproxy.net") -> "镜像 ghproxy.net"
+        else -> prefix
+    }
 
     data class Release(
         val tag: String,        // "v0.4"
@@ -37,9 +55,10 @@ object Updater {
 
     /** 检查最新 Release。阻塞调用，调用方自己开线程。所有源都失败返回 null。 */
     fun check(): Release? {
-        for (prefix in SOURCES) {
+        for (prefix in API_SOURCES) {
             try {
                 val conn = URL(prefix + API).openConnection() as HttpURLConnection
+                conn.instanceFollowRedirects = true
                 conn.connectTimeout = 5000
                 conn.readTimeout = 10000
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -86,17 +105,22 @@ object Updater {
     }
 
     /** 下载到应用私有目录（无需存储权限）。onProgress 返回 false 时中止（用户取消）。
+     *  onSource 在切换下载源时回调（用于进度框提示"正在走哪条线"）。
      *  成功返回文件；所有源都失败返回 null。 */
     fun download(
         ctx: Context,
         rel: Release,
         onProgress: (done: Long, total: Long) -> Boolean,
+        onSource: ((String) -> Unit)? = null,
     ): File? {
         val dir = File(ctx.getExternalFilesDir(null), "update").apply { mkdirs() }
         val dest = File(dir, "closedloop-${rel.tag}.apk")
-        for (prefix in SOURCES) {
+        for (prefix in DL_SOURCES) {
             try {
+                onSource?.invoke(sourceLabel(prefix))
+                if (dest.exists()) dest.delete()
                 val conn = URL(prefix + rel.apkUrl).openConnection() as HttpURLConnection
+                conn.instanceFollowRedirects = true
                 conn.connectTimeout = 8000
                 conn.readTimeout = 30000
                 if (conn.responseCode != 200) {
@@ -104,10 +128,10 @@ object Updater {
                 }
                 val total = if (conn.contentLengthLong > 0) conn.contentLengthLong else rel.apkSize
                 var cancelled = false
+                var done = 0L
                 dest.outputStream().use { out ->
                     conn.inputStream.use { input ->
                         val buf = ByteArray(65536)
-                        var done = 0L
                         while (true) {
                             val n = input.read(buf)
                             if (n < 0) break
@@ -122,6 +146,10 @@ object Updater {
                 conn.disconnect()
                 if (cancelled) {
                     dest.delete(); return null
+                }
+                // 完整性校验：字数对不上说明这条线被截断了，换下一个源重来
+                if (total > 0 && done < total) {
+                    dest.delete(); continue
                 }
                 if (dest.length() > 0) return dest
             } catch (_: Exception) {
