@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -35,6 +36,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import java.io.File
 import java.text.Collator
 import java.time.LocalDate
 import java.util.Locale
@@ -60,10 +62,13 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var fuseDialogShowing = false
 
+    /** 已下载待安装的新 APK（等用户从系统设置回来） */
+    private var pendingApk: File? = null
+
     private val refresher = object : Runnable {
         override fun run() {
             refresh()
-            handler.postDelayed(this, 1000)
+            handler.postDelayed(this, 3000)   // 与服务 3 秒轮询对齐；tick 回调也会触发刷新
         }
     }
 
@@ -80,6 +85,7 @@ class MainActivity : AppCompatActivity() {
         reviewView = findViewById(R.id.review)
         dateView = findViewById(R.id.dateView)
         findViewById<Button>(R.id.btnNew).setOnClickListener { showNewPlanDialog() }
+        findViewById<TextView>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
 
         Notify.ensureChannels(this)
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -95,6 +101,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 用户从"安装未知应用"设置页回来了，且新 APK 已就位 → 直接装
+        val apk = pendingApk
+        if (apk != null && apk.exists() && Updater.canInstall(this)) {
+            pendingApk = null
+            if (!Updater.install(this, apk)) {
+                Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
+            }
+        }
         if (!MonitorService.hasUsageAccess(this)) {
             AlertDialog.Builder(this)
                 .setTitle("需要一个关键权限")
@@ -535,6 +549,98 @@ class MainActivity : AppCompatActivity() {
                 w.attributes = w.attributes.apply { blurBehindRadius = 24 }
             }
         }
+    }
+
+    // ---------- 应用内更新（M6） ----------
+
+    private fun checkUpdate() {
+        val btn = findViewById<TextView>(R.id.btnUpdate)
+        btn.text = "检查中…"
+        Thread {
+            val rel = Updater.check()
+            runOnUiThread {
+                btn.text = "检查更新"
+                when {
+                    rel == null ->
+                        Toast.makeText(this, "检查失败：网络不通或 GitHub 访问受限", Toast.LENGTH_LONG).show()
+                    !Updater.newerThan(rel.versionName, Updater.localVersionName(this)) ->
+                        Toast.makeText(this, "已是最新版（${rel.tag}）", Toast.LENGTH_SHORT).show()
+                    else -> showUpdateDialog(rel)
+                }
+            }
+        }.start()
+    }
+
+    private fun showUpdateDialog(rel: Updater.Release) {
+        val msg = (rel.title + "\n\n" + rel.notes).trim().take(400)
+        AlertDialog.Builder(this)
+            .setTitle("发现新版本 ${rel.tag}")
+            .setMessage(msg.ifBlank { "下载后可直接覆盖安装，数据不会丢。" })
+            .setPositiveButton("下载并安装") { _, _ -> downloadUpdate(rel) }
+            .setNegativeButton("以后再说", null)
+            .show()
+    }
+
+    private fun downloadUpdate(rel: Updater.Release) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad / 2)
+        }
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            progressTintList = ColorStateList.valueOf(GREEN)
+        }
+        val status = TextView(this).apply {
+            text = "正在连接…"; textSize = 11f; setTextColor(SUB)
+            setPadding(0, pad / 2, 0, 0)
+        }
+        box.addView(bar)
+        box.addView(status)
+        var cancelled = false
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("下载 ${rel.tag}")
+            .setView(box)
+            .setNegativeButton("取消", null)
+            .show()
+        dlg.setOnDismissListener { cancelled = true }
+        Thread {
+            val f = Updater.download(this, rel) { done, total ->
+                runOnUiThread {
+                    bar.isIndeterminate = total <= 0
+                    if (total > 0) {
+                        bar.progress = (done * 100 / total).toInt()
+                        status.text = "%.1f / %.1f MB".format(done / 1048576.0, total / 1048576.0)
+                    } else {
+                        status.text = "${done / 1024} KB"
+                    }
+                }
+                !cancelled
+            }
+            runOnUiThread {
+                dlg.setOnDismissListener(null)
+                dlg.dismiss()
+                when {
+                    cancelled -> Unit
+                    f == null ->
+                        Toast.makeText(this, "下载失败：直连和镜像都不通，换个网络再试", Toast.LENGTH_LONG).show()
+                    Updater.canInstall(this) -> {
+                        if (!Updater.install(this, f)) {
+                            Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    else -> {
+                        // Android 8+ 首次：先去系统设置授予"安装未知应用"，回来自动装
+                        pendingApk = f
+                        Toast.makeText(
+                            this, "请允许「闭环」安装应用；设置完回到这里会自动继续",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        startActivity(Updater.installPermissionIntent(this))
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun handleSettleActs(eng: Engine, acts: List<Act>) {

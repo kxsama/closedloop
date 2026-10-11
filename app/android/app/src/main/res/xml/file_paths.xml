@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内更新：Updater 下载的 APK 放在 getExternalFilesDir("update")，对应 external-files-path/update/ -->
+<paths>
+    <external-files-path
+        name="updates"
+        path="update/" />
+</paths>

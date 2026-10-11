@@ -76,6 +76,12 @@ class MonitorService : Service() {
 
     private var tickCount = 0L
 
+    /** 前台状态保持：最近一次确知的前台包名（v0.4 修复核心）。
+     *  旧实现只查最近 10 秒事件，看书这种"无切换"场景 10 秒后查不到事件 → 返回 null → 计时静默冻结。
+     *  现在增量消费事件流：没新事件 = 没有切换 = 上次的前台应用仍在前面。 */
+    private var currentFg: String? = null
+    private var lastQueryAt = 0L
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -129,7 +135,7 @@ class MonitorService : Service() {
                 tick()
             } catch (_: Exception) {
             }
-            delay(1000)
+            delay(3000)   // 3 秒轮询：省电（用户电池弱）；计时按真实时间差算，精度不受影响
         }
     }
 
@@ -180,7 +186,7 @@ class MonitorService : Service() {
             }
         }
 
-        // 会话持久化（每 10 秒或刚好有事件时）
+        // 会话持久化（约每 30 秒 = 10 个 tick）
         tickCount += 1
         if (tickCount % 10 == 0L) persistSessions()
 
@@ -313,23 +319,28 @@ class MonitorService : Service() {
         PlanStore.saveSessions(this, map)
     }
 
-    /** 通过 UsageEvents 取最近的前台应用包名，顺带刷新"最近用户活动"时间。 */
+    /** 增量读取 UsageEvents 维护 currentFg，顺带刷新"最近用户活动"时间。
+     *  窗口从上次查询点回退 2 秒（防边界丢事件）到当前；服务刚启动回溯 30 分钟恢复现场。
+     *  窗口重叠导致的事件重复是幂等的，无副作用。
+     *  lastQueryAt 只在查询成功后更新——查询抛异常时窗口保持不动，下次自动重查这段，不丢事件。 */
     private fun foregroundPackage(): String? {
         val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
-        val events = usm.queryEvents(now - 10_000, now)
+        val begin = if (lastQueryAt == 0L) now - 1_800_000
+        else maxOf(lastQueryAt - 2_000, now - 1_800_000)
+        val events = usm.queryEvents(begin, now)
         val e = UsageEvents.Event()
-        var pkg: String? = null
         while (events.hasNextEvent()) {
             events.getNextEvent(e)
             if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
                 (Build.VERSION.SDK_INT >= 23 && e.eventType == UsageEvents.Event.ACTIVITY_RESUMED)
             ) {
-                pkg = e.packageName
+                currentFg = e.packageName
                 lastUserActivityAt = maxOf(lastUserActivityAt, e.timeStamp / 1000)
             }
         }
-        return pkg
+        lastQueryAt = now
+        return currentFg
     }
 
     private fun appLabel(pkg: String): String {

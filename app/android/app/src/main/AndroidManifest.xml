@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Android 11+ 包可见性：看到用户安装的全部应用（侧载场景，Play 上架需另申报） -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- 应用内更新（M6）：检查 Release + 下载 APK；8+ 安装未知应用需用户在系统设置授予一次 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <intent>
@@ -21,7 +24,7 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
         android:label="闭环"
         android:theme="@style/Theme.ClosedLoop">
 
@@ -42,6 +45,17 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="计划执行监测" />
         </service>
+
+        <!-- 应用内更新：把私有目录里的 APK 以 content:// 授给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.closedloop.app.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>
