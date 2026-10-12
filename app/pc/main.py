@@ -154,7 +154,7 @@ def update_nag(now: float) -> None:
         nag_text_key = key
         nag.update(max(lvl, 1), persona.say(max(lvl, 1), ctx_of(p, st)),
                    f"有效 {st['effective_min']} / 剩 {st['left_min']} 分"
-                   f" · 偏离 {st['deviation_min']} 分")
+                   f" · 切走 {st['deviation_min']} 分")
     if now < nag_snooze_until and lvl < 3:
         nag.hide()
     else:
@@ -184,10 +184,10 @@ def review_text(statuses: dict) -> str:
                  if rec.get("result") != "完成" else "")
         lines.append(f"■ {rec['name']}：{rec['result']}{reason}｜"
                      f"有效 {rec['effective_min']}/{rec['target']} 分｜"
-                     f"偏离 {rec['deviation_min']} 分 × {rec['deviation_count']} 次{extra}")
+                     f"切走 {rec['deviation_min']} 分 × {rec['deviation_count']} 次{extra}")
         gaps_min = round(sum(e - s for s, e in rec.get("gaps", [])) / 60, 1)
         if gaps_min:
-            lines.append(f"  未观测 {gaps_min} 分钟（服务中断，未计入偏离）")
+            lines.append(f"  未观测 {gaps_min} 分钟（服务中断期间未计时）")
     for p in plans:
         st = statuses.get(p.id, {})
         if st.get("state") == "WAITING":

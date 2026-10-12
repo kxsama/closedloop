@@ -15,7 +15,9 @@ import androidx.core.app.NotificationCompat
 object Notify {
     private const val CH_REMIND = "remind"
     private const val CH_NAG = "nag"
+    private const val CH_DL = "dl"
     private const val NAG_ID = 1001
+    private const val DL_ID = 1002
 
     private const val COLOR_OK = 0xFF22A06B.toInt()
     private const val COLOR_WARN = 0xFFE8A13A.toInt()
@@ -55,8 +57,11 @@ object Notify {
         }
         val nag = NotificationChannel(
             CH_NAG, "计划进行中", NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "执行期的常驻状态与偏离催促" }
-        manager(ctx).createNotificationChannels(listOf(remind, nag))
+        ).apply { description = "执行期的常驻状态与切走提醒" }
+        val dl = NotificationChannel(
+            CH_DL, "应用更新下载", NotificationManager.IMPORTANCE_LOW
+        ).apply { description = "更新包下载进度（切到别的应用也能看到）" }
+        manager(ctx).createNotificationChannels(listOf(remind, nag, dl))
     }
 
     private fun contentIntent(ctx: Context): PendingIntent =
@@ -116,4 +121,23 @@ object Notify {
     }
 
     fun nagCancel(ctx: Context) = manager(ctx).cancel(NAG_ID)
+
+    /** 下载进度通知（v0.7）：切后台也看得见"还在下载"——修复"进度框没了、
+     *  实际还在下、用户又点一遍"的问题。total<=0 时显示不确定进度。 */
+    fun dlUpdate(ctx: Context, title: String, text: String, done: Long, total: Long) {
+        val n = NotificationCompat.Builder(ctx, CH_DL)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setLargeIcon(largeIcon(ctx))
+            .setContentTitle(title)
+            .setContentText(text)
+            .setColor(COLOR_OK)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setProgress(100, if (total > 0) (done * 100 / total).toInt().coerceIn(0, 100) else 0, total <= 0)
+            .setContentIntent(contentIntent(ctx))
+            .build()
+        manager(ctx).notify(DL_ID, n)
+    }
+
+    fun dlCancel(ctx: Context) = manager(ctx).cancel(DL_ID)
 }

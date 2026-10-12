@@ -2,7 +2,9 @@ package com.closedloop.app
 
 import kotlin.random.Random
 
-/** 人格层 v1：本地模板。语气原则：情绪递进（温柔→担心→失望），绝不愤怒。 */
+/** 人格层 v1：本地模板。语气原则：情绪递进（温柔→担心→失望），绝不愤怒。
+ *  文案纪律（v0.7）：用中立的事实性词汇，不带胜负/道德评判——"切走"不是"偏离"，
+ *  完成就是完成，不说"赢了"。产品是镜子，不是裁判。 */
 object Persona {
 
     private val templates = mapOf(
@@ -19,14 +21,14 @@ object Persona {
             "有点失望。{plan} 的 {target} 分钟，现在只走了 {eff}。",
         ),
         4 to listOf(
-            "已经偏了 {dev} 分钟。还要吗？要说实话哦。",
-            "{plan} 偏离 {dev} 分钟了。继续，还是今天就这样？",
+            "已经切走 {dev} 分钟了。还要吗？要说实话哦。",
+            "{plan} 已经切走 {dev} 分钟了。继续，还是今天就这样？",
         ),
     )
 
     private val doneTexts = listOf(
-        "完成了！{plan}，{target} 分钟一分不少。今天赢了。",
-        "{plan} 搞定，{target} 分钟全部拿下。给你记上。",
+        "完成了！{plan}，{target} 分钟一分不少。",
+        "{plan} 完成，{target} 分钟都记上了。",
     )
 
     fun say(level: Int, ctx: Map<String, Any>): String {

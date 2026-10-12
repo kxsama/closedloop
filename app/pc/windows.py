@@ -12,8 +12,8 @@ FONT = "Microsoft YaHei UI"
 
 LEVEL_STYLE = {
     1: {"bg": "#EAF3DE", "fg": "#27500A", "bd": "#3B6D11", "tag": "计时中"},
-    2: {"bg": "#FAEEDA", "fg": "#633806", "bd": "#854F0B", "tag": "偏离中"},
-    3: {"bg": "#F6E5E3", "fg": "#8E3A31", "bd": "#B8443C", "tag": "持续偏离"},
+    2: {"bg": "#FAEEDA", "fg": "#633806", "bd": "#854F0B", "tag": "已切走"},
+    3: {"bg": "#F6E5E3", "fg": "#8E3A31", "bd": "#B8443C", "tag": "持续切走"},
 }
 STYLE_DONE = {"bg": "#EAF3DE", "fg": "#27500A", "bd": "#3B6D11", "tag": "完成"}
 STYLE_INFO = {"bg": "#E6F1FB", "fg": "#0C447C", "bd": "#185FA5", "tag": "提醒"}
@@ -130,7 +130,7 @@ class FuseDialog:
         st = STYLE_WARN
         w.configure(bg=st["bg"])
         w.resizable(False, False)
-        tk.Label(w, text="熔断 · 偏离有点久了", font=(FONT, 11, "bold"),
+        tk.Label(w, text="熔断 · 切走有点久了", font=(FONT, 11, "bold"),
                  bg=st["bg"], fg=st["fg"]).pack(anchor="w", padx=16, pady=(14, 4))
         tk.Label(w, text=text, wraplength=330, justify="left",
                  font=(FONT, 10), bg=st["bg"], fg=st["fg"]).pack(

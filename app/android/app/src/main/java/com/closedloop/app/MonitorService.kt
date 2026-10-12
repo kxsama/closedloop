@@ -322,7 +322,13 @@ class MonitorService : Service() {
     /** 增量读取 UsageEvents 维护 currentFg，顺带刷新"最近用户活动"时间。
      *  窗口从上次查询点回退 2 秒（防边界丢事件）到当前；服务刚启动回溯 30 分钟恢复现场。
      *  窗口重叠导致的事件重复是幂等的，无副作用。
-     *  lastQueryAt 只在查询成功后更新——查询抛异常时窗口保持不动，下次自动重查这段，不丢事件。 */
+     *  lastQueryAt 只在查询成功后更新——查询抛异常时窗口保持不动，下次自动重查这段，不丢事件。
+     *
+     *  v0.7 小窗修复：除了 RESUMED，还要消费"退后台"类事件与 USER_INTERACTION——
+     *  关小窗时，小窗应用会收到 PAUSED/STOPPED/DESTROYED，而部分 ROM 不给底下那个应用补发
+     *  RESUMED。旧实现把 currentFg 永远卡在小窗应用上，用户明明切回去了却被持续判偏离。
+     *  现在：currentFg 收到退后台事件 → 前台不可知 → 置空（引擎按"未观测"冻结），
+     *  宁可诚实地不计时，也不瞎计时；随后靠新的 RESUMED 或用户触摸（USER_INTERACTION）恢复。 */
     private fun foregroundPackage(): String? {
         val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
@@ -332,16 +338,40 @@ class MonitorService : Service() {
         val e = UsageEvents.Event()
         while (events.hasNextEvent()) {
             events.getNextEvent(e)
-            if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
-                (Build.VERSION.SDK_INT >= 23 && e.eventType == UsageEvents.Event.ACTIVITY_RESUMED)
-            ) {
-                currentFg = e.packageName
-                lastUserActivityAt = maxOf(lastUserActivityAt, e.timeStamp / 1000)
+            val t = e.eventType
+            val pkg = e.packageName
+            when {
+                t == UsageEvents.Event.MOVE_TO_FOREGROUND ||
+                    (Build.VERSION.SDK_INT >= 23 && t == UsageEvents.Event.ACTIVITY_RESUMED) -> {
+                    currentFg = pkg
+                    lastUserActivityAt = maxOf(lastUserActivityAt, e.timeStamp / 1000)
+                }
+                isBackgroundType(t) && pkg == currentFg -> {
+                    // 当前认定的前台应用退到后台了（典型：小窗被关闭/销毁）。
+                    // 若同批事件里紧跟另一个 RESUMED，会被下面的分支接住；
+                    // 没有后续 RESUMED（ROM 不补发）就保持"不可知"→ 冻结，不误判偏离。
+                    currentFg = null
+                }
+                t == UsageEvents.Event.USER_INTERACTION -> {
+                    lastUserActivityAt = maxOf(lastUserActivityAt, e.timeStamp / 1000)
+                    // 前台未知时的恢复线索：用户在触摸哪个应用，它多半就在前台。
+                    // （小窗关闭后 ROM 不补发 RESUMED 的场景，靠翻页/滑动触摸恢复计时。）
+                    // 仅在 currentFg == null 时采用，避免与明确的 RESUMED 判断打架。
+                    if (currentFg == null) currentFg = pkg
+                }
             }
         }
         lastQueryAt = now
         return currentFg
     }
+
+    /** "退到后台"类事件类型。
+     *  ACTIVITY_STOPPED/DESTROYED 在部分 SDK 里没有公开常量，按 AOSP 实际值内联：
+     *  ACTIVITY_PAUSED=2（即 MOVE_TO_BACKGROUND）、ACTIVITY_STOPPED=23、ACTIVITY_DESTROYED=24，
+     *  这些事件从 API 29 起才会由系统发出；低版本设备上只是收不到，判断本身无害。 */
+    private fun isBackgroundType(t: Int): Boolean =
+        t == UsageEvents.Event.MOVE_TO_BACKGROUND ||
+            (Build.VERSION.SDK_INT >= 29 && (t == 23 || t == 24))
 
     private fun appLabel(pkg: String): String {
         if (pkg.isBlank()) return "别的应用"

@@ -94,7 +94,7 @@ class PlanCard(ctk.CTkFrame):
                 color = DANGER if strong else WARN
                 chip_bg = DANGER_BG if strong else WARN_BG
                 chip_fg = DANGER if strong else WARN_FG
-                chip_txt = "偏离中"
+                chip_txt = "已切走"
             else:
                 chip_bg, chip_fg, chip_txt = ACCENT_BG, ACCENT_DARK, "计时中"
         elif state == "COOLDOWN":
@@ -117,7 +117,7 @@ class PlanCard(ctk.CTkFrame):
         detail = f"目标 {self.plan.target_minutes} 分钟"
         dev_min, dev_cnt = st.get("deviation_min", 0), st.get("deviation_count", 0)
         if dev_min or dev_cnt:
-            detail += f"｜偏离 {dev_min} 分 × {dev_cnt} 次"
+            detail += f"｜切走 {dev_min} 分 × {dev_cnt} 次"
         if state == "RUNNING" and deviating and st.get("cur_proc"):
             detail += f"｜当前：{st['cur_proc']}"
         self.lbl_detail.configure(text=detail)

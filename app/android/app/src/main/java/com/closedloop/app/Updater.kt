@@ -47,11 +47,44 @@ object Updater {
         val tag: String,        // "v0.4"
         val title: String,      // release 标题
         val notes: String,      // release 说明
+        val htmlUrl: String,    // 该 release 的网页地址（弹窗"查看完整说明"用）
         val apkUrl: String,     // asset 下载地址
         val apkSize: Long,      // 字节
         val versionCode: Int,   // 从 tag 末段数字解析（仅用于展示）
         val versionName: List<Int>, // "v0.10" -> [0, 10]，语义比较用
     )
+
+    /** 进程级下载状态（v0.7）：长任务的"进行中"不能只存在于 UI 上。
+     *  之前下载挂在 Activity 局部 Thread + 局部对话框上，切后台回来对话框没了、
+     *  下载还在跑，用户以为没在下又点一次 → 下了两遍。
+     *  现在状态归进程：任何 Activity 实例（含重建后的新实例）都能看到并重挂进度 UI；
+     *  入口先判 running，天然挡住重复启动。 */
+    object DownloadState {
+        @Volatile var running = false
+        @Volatile var cancelRequested = false
+        @Volatile var completed = false         // 本进程内有过一次已结束的下载
+        @Volatile var tag = ""           // 正在下载的版本
+        @Volatile var source = ""        // 人话源名（"镜像 gh-proxy.com"）
+        @Volatile var done = 0L          // 已下载字节
+        @Volatile var total = 0L         // 总字节（未知时 0）
+        @Volatile var result: File? = null   // 下载成功待安装
+        @Volatile var failed = false     // 结束态：失败（取消不算失败）
+        @Volatile var handled = false    // 结束态是否已被处理（安装/失败提示已发起）
+        @Volatile var awaitPermission = false   // 已发起"安装未知应用"授权引导，等回来装
+
+        fun begin(tag: String) {
+            running = true; cancelRequested = false; completed = false
+            this.tag = tag; source = ""; done = 0; total = 0
+            result = null; failed = false; handled = false; awaitPermission = false
+        }
+
+        fun finish(file: File?) {
+            running = false
+            completed = true
+            failed = file == null && !cancelRequested
+            result = file
+        }
+    }
 
     /** 检查最新 Release。阻塞调用，调用方自己开线程。所有源都失败返回 null。 */
     fun check(): Release? {
@@ -97,11 +130,26 @@ object Updater {
             tag = tag,
             title = m["name"]?.toString() ?: tag,
             notes = m["body"]?.toString() ?: "",
+            htmlUrl = m["html_url"]?.toString()
+                ?: "https://github.com/$REPO/releases/tag/$tag",
             apkUrl = apkUrl,
             apkSize = apkSize,
             versionCode = code,
             versionName = parts,
         )
+    }
+
+    /** release notes 的摘要：第一个非空段，去掉 Markdown 噪音（引用符/星号/井号）。
+     *  发布纪律：notes 第一段必须一句话说清本版改了什么——它就是弹窗摘要。 */
+    fun summaryOf(notes: String): String {
+        val para = notes.trim().split(Regex("\n\\s*\n"))
+            .firstOrNull { it.isNotBlank() } ?: return ""
+        return para.lines()
+            .joinToString(" ") { it.trim() }
+            .replace(">", "")
+            .replace("**", "")
+            .replace(Regex("#+\\s*"), "")
+            .trim()
     }
 
     /** 下载到应用私有目录（无需存储权限）。onProgress 返回 false 时中止（用户取消）。

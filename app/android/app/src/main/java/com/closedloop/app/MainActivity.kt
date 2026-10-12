@@ -62,8 +62,9 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var fuseDialogShowing = false
 
-    /** 已下载待安装的新 APK（等用户从系统设置回来） */
-    private var pendingApk: File? = null
+    /** 下载进度框（当前实例的）；状态本体在 Updater.DownloadState，切后台回来重挂 */
+    private var dlDialog: AlertDialog? = null
+    private var dlPolling = false
 
     private val refresher = object : Runnable {
         override fun run() {
@@ -104,14 +105,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 用户从"安装未知应用"设置页回来了，且新 APK 已就位 → 直接装
-        val apk = pendingApk
-        if (apk != null && apk.exists() && Updater.canInstall(this)) {
-            pendingApk = null
-            if (!Updater.install(this, apk)) {
-                Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
-            }
+        // 下载中切后台再回来 → 重挂进度框（状态在 DownloadState，丢不了）
+        if (Updater.DownloadState.running) showDownloadDialog()
+        // 授权页回来了且已允许 → 自动接着装
+        if (Updater.DownloadState.awaitPermission && Updater.canInstall(this)) {
+            Updater.DownloadState.awaitPermission = false
+            Updater.DownloadState.result?.let { installApk(it) }
         }
+        // 下载已结束还没处理（比如人不在时下完的）→ 接着走安装/报错
+        consumeFinishedDownload()
         if (!MonitorService.hasUsageAccess(this)) {
             AlertDialog.Builder(this)
                 .setTitle("需要一个关键权限")
@@ -201,7 +203,7 @@ class MainActivity : AppCompatActivity() {
                 chip.setBackgroundColor(0xFFFBF3E2.toInt())
             }
             state == "RUNNING" && deviating -> {
-                chip.text = "偏离中"
+                chip.text = "已切走"
                 chip.setTextColor(if (level >= 3) DANGER else 0xFF8A5A00.toInt())
                 chip.setBackgroundColor(if (level >= 3) 0xFFFBEAEA.toInt() else 0xFFFBF3E2.toInt())
             }
@@ -260,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             var t = "目标 ${p.targetMinutes} 分钟"
             val devMin = ((st?.get("deviationSec") as? Double) ?: 0.0).toInt() / 60
             val devCnt = (st?.get("deviationCount") as? Int) ?: 0
-            if (devMin > 0 || devCnt > 0) t += "｜偏离 ${devMin} 分 × ${devCnt} 次"
+            if (devMin > 0 || devCnt > 0) t += "｜切走 ${devMin} 分 × ${devCnt} 次"
             text = t; textSize = 10f; setTextColor(SUB)
         }
         foot.addView(detail, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -297,7 +299,7 @@ class MainActivity : AppCompatActivity() {
             val devMin = (rec["deviationMin"] as? Double)?.toInt() ?: 0
             val devCnt = (rec["deviationCount"] as? Double)?.toInt() ?: 0
             val reason = rec["reason"]?.toString()?.takeIf { it.isNotBlank() }?.let { "（$it）" } ?: ""
-            lines.add("✓ $name：$result$reason｜有效 $eff/$target 分｜偏离 $devMin 分 × $devCnt 次")
+            lines.add("✓ $name：$result$reason｜有效 $eff/$target 分｜切走 $devMin 分 × $devCnt 次")
         }
         val now = System.currentTimeMillis() / 1000
         for (p in plans) {
@@ -333,7 +335,7 @@ class MainActivity : AppCompatActivity() {
         fuseDialogShowing = true
         AlertDialog.Builder(this)
             .setTitle("熔断询问")
-            .setMessage("「${eng.plan.name}」累计偏离已达上限。还要吗？")
+            .setMessage("「${eng.plan.name}」累计切走时间已达上限。还要吗？")
             .setPositiveButton("继续") { _, _ ->
                 eng.fuseContinue()
                 MonitorService.pendingFusePlanId = null
@@ -554,10 +556,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- 应用内更新（M6） ----------
+    // ---------- 应用内更新（M6；v0.7 重构下载状态为进程级单例） ----------
 
-    /** 按钮上常驻显示当前版本——免得出现"我到底装的是哪版"的扯皮 */
-    private fun updateBtnLabel(): String = "v${localVersion()} · 更新"
+    /** 按钮上常驻显示当前版本——免得出现"我到底装的是哪版"的扯皮；
+     *  下载中改为"下载中"，点击即回到进度框。 */
+    private fun updateBtnLabel(): String =
+        if (Updater.DownloadState.running) "下载中… · 点击查看"
+        else "v${localVersion()} · 更新"
 
     private fun localVersion(): String = try {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
@@ -566,6 +571,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkUpdate() {
+        if (Updater.DownloadState.running) {   // 别重复起下载——重挂进度框就行
+            showDownloadDialog(); return
+        }
         val btn = findViewById<TextView>(R.id.btnUpdate)
         btn.text = "检查中…"
         Thread {
@@ -583,17 +591,65 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** 发现新版本弹窗：只放一句话摘要（notes 第一段）——不再糊整篇 Markdown 文本墙；
+     *  想看全文点「完整说明」跳浏览器。 */
     private fun showUpdateDialog(rel: Updater.Release) {
-        val msg = (rel.title + "\n\n" + rel.notes).trim().take(400)
+        val summary = Updater.summaryOf(rel.notes)
+            .ifBlank { "下载后可直接覆盖安装，数据不会丢。" }
         AlertDialog.Builder(this)
             .setTitle("发现新版本 ${rel.tag}（当前 v${localVersion()}）")
-            .setMessage(msg.ifBlank { "下载后可直接覆盖安装，数据不会丢。" })
+            .setMessage(summary)
             .setPositiveButton("下载并安装") { _, _ -> downloadUpdate(rel) }
+            .setNeutralButton("完整说明") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(rel.htmlUrl)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "没有可打开的浏览器", Toast.LENGTH_SHORT).show()
+                }
+            }
             .setNegativeButton("以后再说", null)
             .show()
     }
 
+    /** 防重复入口：已在下载就只重挂进度框。 */
     private fun downloadUpdate(rel: Updater.Release) {
+        if (Updater.DownloadState.running) {
+            showDownloadDialog(); return
+        }
+        Updater.DownloadState.begin(rel.tag)
+        Notify.dlUpdate(applicationContext, "下载 ${rel.tag}", "正在连接…", 0, 0)
+        // 下载线程只持 applicationContext，不持 Activity——Activity 重建/回收都不影响它
+        Thread {
+            val appCtx = applicationContext
+            var lastNotifyAt = 0L
+            val f = Updater.download(appCtx, rel, { done, total ->
+                val s = Updater.DownloadState
+                s.done = done; s.total = total
+                // 通知别刷太勤：每 512KB 或刚换源后更新一次
+                if (done - lastNotifyAt > 512 * 1024 || lastNotifyAt == 0L) {
+                    lastNotifyAt = done
+                    val txt = if (total > 0) "%.1f / %.1f MB".format(done / 1048576.0, total / 1048576.0)
+                    else "${done / 1024} KB"
+                    Notify.dlUpdate(appCtx, "下载 ${rel.tag}", txt, done, total)
+                }
+                !s.cancelRequested
+            }, { src ->
+                Updater.DownloadState.source = src
+                Notify.dlUpdate(appCtx, "下载 ${rel.tag}", "正在连接 $src…", 0, 0)
+            })
+            Updater.DownloadState.finish(f)
+            Notify.dlCancel(appCtx)
+            // 人可能已经切走了：结果处理交给 Activity 回来时的 consumeFinishedDownload()
+        }.start()
+        showDownloadDialog()
+    }
+
+    /** 进度框：不直接接收线程回调，而是 400ms 轮询 DownloadState——
+     *  这样无论哪个 Activity 实例弹出它，都能显示同一份真实进度；
+     *  下载结束（含取消/失败）自动收尾。 */
+    private fun showDownloadDialog() {
+        if (dlDialog?.isShowing == true) return
+        val s = Updater.DownloadState
         val pad = (16 * resources.displayMetrics.density).toInt()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -609,52 +665,85 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(bar)
         box.addView(status)
-        var cancelled = false
         val dlg = AlertDialog.Builder(this)
-            .setTitle("下载 ${rel.tag}")
+            .setTitle("下载 ${s.tag}")
             .setView(box)
             .setNegativeButton("取消", null)
             .show()
-        dlg.setOnDismissListener { cancelled = true }
-        Thread {
-            val f = Updater.download(this, rel, { done, total ->
-                runOnUiThread {
-                    bar.isIndeterminate = total <= 0
-                    if (total > 0) {
-                        bar.progress = (done * 100 / total).toInt()
-                        status.text = "%.1f / %.1f MB".format(done / 1048576.0, total / 1048576.0)
-                    } else {
-                        status.text = "${done / 1024} KB"
-                    }
+        // 关掉进度框 = 取消下载（通知栏也看得到取消效果）
+        dlg.setOnDismissListener {
+            if (Updater.DownloadState.running) Updater.DownloadState.cancelRequested = true
+        }
+        dlDialog = dlg
+        if (dlPolling) return
+        dlPolling = true
+        val poll = object : Runnable {
+            override fun run() {
+                val st = Updater.DownloadState
+                if (dlDialog?.isShowing != true) {   // 用户已取消或框被收掉
+                    dlDialog = null
+                    dlPolling = false
+                    if (st.running) findViewById<TextView>(R.id.btnUpdate).text = "下载中… · 点击查看"
+                    return
                 }
-                !cancelled
-            }, { src ->
-                runOnUiThread { status.text = "正在连接 $src…" }
-            })
-            runOnUiThread {
-                dlg.setOnDismissListener(null)
-                dlg.dismiss()
-                when {
-                    cancelled -> Unit
-                    f == null ->
-                        Toast.makeText(this, "下载失败：镜像和直连都不通，换个网络再试", Toast.LENGTH_LONG).show()
-                    Updater.canInstall(this) -> {
-                        if (!Updater.install(this, f)) {
-                            Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                    else -> {
-                        // Android 8+ 首次：先去系统设置授予"安装未知应用"，回来自动装
-                        pendingApk = f
-                        Toast.makeText(
-                            this, "请允许「闭环」安装应用；设置完回到这里会自动继续",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        startActivity(Updater.installPermissionIntent(this))
-                    }
+                bar.isIndeterminate = st.total <= 0
+                if (st.total > 0) bar.progress = (st.done * 100 / st.total).toInt()
+                status.text = when {
+                    st.source.isNotBlank() && st.done == 0L -> "正在连接 ${st.source}…"
+                    st.total > 0 -> "%.1f / %.1f MB".format(st.done / 1048576.0, st.total / 1048576.0)
+                    st.done > 0 -> "${st.done / 1024} KB"
+                    else -> "正在连接 ${st.source.ifBlank { "…" }}…"
                 }
+                if (!st.running) {   // 下载结束：收框、处理结果
+                    dlDialog?.setOnDismissListener(null)
+                    dlDialog?.dismiss()
+                    dlDialog = null
+                    dlPolling = false
+                    findViewById<TextView>(R.id.btnUpdate).text = updateBtnLabel()
+                    consumeFinishedDownload()
+                    return
+                }
+                handler.postDelayed(this, 400)
             }
-        }.start()
+        }
+        handler.post(poll)
+    }
+
+    /** 处理已结束的下载结果（成功→安装/授权引导；失败→toast；取消→沉默）。
+     *  completed 标志保证"本进程从没下载过"的空白态不会被误报成失败。 */
+    private fun consumeFinishedDownload() {
+        val s = Updater.DownloadState
+        if (s.running || !s.completed || s.handled) return
+        val apk = s.result
+        when {
+            s.cancelRequested -> s.handled = true
+            apk == null || !apk.exists() -> {
+                s.handled = true
+                Toast.makeText(this, "下载失败：镜像和直连都不通，换个网络再试", Toast.LENGTH_LONG).show()
+            }
+            Updater.canInstall(this) -> {
+                s.handled = true
+                installApk(apk)
+            }
+            else -> {
+                // Android 8+ 首次：先去系统设置授予"安装未知应用"，回来 onResume 自动装。
+                // 只引导一次（handled=true + awaitPermission），回来没授权就保持沉默，
+                // 用户下次点"更新"会重新走流程。
+                s.handled = true
+                s.awaitPermission = true
+                Toast.makeText(
+                    this, "请允许「闭环」安装应用；设置完回到这里会自动继续",
+                    Toast.LENGTH_LONG
+                ).show()
+                startActivity(Updater.installPermissionIntent(this))
+            }
+        }
+    }
+
+    private fun installApk(apk: File) {
+        if (!Updater.install(this, apk)) {
+            Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun handleSettleActs(eng: Engine, acts: List<Act>) {
