@@ -17,14 +17,24 @@ class _LASTINPUTINFO(ctypes.Structure):
 
 
 def idle_seconds() -> float:
-    """距上次键鼠输入的秒数（GetLastInputInfo）；失败时返回 0（当作有人操作）。"""
+    """距上次键鼠输入的秒数（GetLastInputInfo）；失败时返回 0（当作有人操作）。
+
+    **必须用 32 位的 GetTickCount()，不能用 GetTickCount64()**：
+    `LASTINPUTINFO.dwTime` 是 32 位（DWORD），装的是 32 位 GetTickCount 的值。
+    拿 64 位计数去减它，开机满 49.7 天（2^32 毫秒）后高位对不上，
+    结果会变成几千万秒——于是每个 tick 都判定"你好像 N 分钟没操作了"，
+    提醒永不停止。按代码推是必然，只是要连续开机一个多月才会撞上。
+    两个 32 位值相减再按 2^32 取模，得到的就是正确的空闲时长。
+    """
     try:
         lii = _LASTINPUTINFO()
         lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
         if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
             return 0.0
-        ticks = ctypes.windll.kernel32.GetTickCount64()
-        return max(0.0, (ticks - lii.dwTime) / 1000.0)
+        k32 = ctypes.windll.kernel32
+        k32.GetTickCount.restype = wintypes.DWORD      # 默认是 c_int，会给出负数
+        ticks = k32.GetTickCount()
+        return max(0.0, ((ticks - lii.dwTime) & 0xFFFFFFFF) / 1000.0)
     except Exception:
         return 0.0
 

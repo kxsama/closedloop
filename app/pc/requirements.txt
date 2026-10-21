@@ -1,7 +1,11 @@
 # 闭环 · Windows 版依赖（Python 3.10+）
 # tkinter / winsound 是 Python 标准库，无需安装
+#
+# 一律写上下限（v0.3）：原来只有 `customtkinter>=5.2.0`，今天新装就是 6.0.0。
+# 这次 5.2.2 与 6.0.0 都跑通了，但下一个大版本改一个布局 API，
+# "双击 setup.bat 就能用"就会变成"双击就白屏"——而这种崩法用户根本不知道为什么。
 
-customtkinter>=5.2.0   # 圆角卡片 UI
-pillow>=10.0.0         # 截图与图标处理
-psutil>=5.9.0          # 进程枚举
-pywin32>=306           # 前台窗口检测（win32gui / win32process）+ 键鼠空闲检测
+customtkinter>=5.2.0,<6.1   # 圆角卡片 UI（5.2.x 与 6.0.x 均实测可用）
+pillow>=10.0.0,<14          # 图标处理
+psutil>=5.9.0,<8            # 进程枚举
+pywin32>=306,<400           # 前台窗口检测（win32gui / win32process）+ 键鼠空闲检测

@@ -11,7 +11,8 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 import processes
-from widgets import ACCENT, FAINT, FONT, INK, SUB, ProgressBar, WheelPicker
+from widgets import (ACCENT, FAINT, FONT, INK, SUB, ProgressBar, WheelPicker)
+from windows import set_icon
 
 BG = "#F6F6F4"
 CARD = "#FFFFFF"
@@ -133,7 +134,7 @@ class PlanCard(ctk.CTkFrame):
 class NewPlanDialog:
     """新建计划：滚轮选时间与时长，白名单手填。"""
 
-    DURATIONS = [5, 10, 15, 20, 30, 45, 60, 90, "自定义"]
+    DURATIONS = [3, 5, 10, 15, 20, 30, 45, 60, 90, "自定义"]
 
     def __init__(self, root, on_save):
         self.on_save = on_save
@@ -141,25 +142,46 @@ class NewPlanDialog:
         # CTk 控件放在普通 Toplevel 里渲染完全正常
         w = tk.Toplevel(root)
         w.title("新建计划")
-        w.geometry("372x596")
-        w.resizable(False, False)
         w.configure(bg=BG)
         w.attributes("-topmost", True)
+        w.transient(root)
+        set_icon(w)
+        w.geometry("392x648")
+        w.minsize(392, 460)
+        # 只放开纵向：内容多时能拉大，横向版面不会被拉歪
+        w.resizable(False, True)
         self.win = w
 
-        body = ctk.CTkFrame(w, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=18, pady=16)
+        # 底部按钮先占位（side="bottom"）。
+        # 以前保存按钮和内容一起从上往下 pack：选「自定义」后内容超出固定高度 596，
+        # Tk 会把**最后一个**包进去的控件压成 1 px —— 那正是自定义输入框，
+        # 于是"选了自定义就走进死路"，而且窗口锁死不可缩放，用户连自救都做不到。
+        # 现在按钮先占住底部，中间内容单独滚动，内容再长也不会挤掉任何控件。
+        footer = ctk.CTkFrame(w, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=18, pady=(8, 14))
+        ctk.CTkButton(footer, text="取消", font=(FONT, 12), width=90, height=42,
+                      corner_radius=21, fg_color=GRAY_BG, text_color=SUB,
+                      hover_color="#E6E5E0",
+                      command=w.destroy).pack(side="left")
+        ctk.CTkButton(footer, text="保存计划", font=(FONT, 13, "bold"), height=42,
+                      corner_radius=21, fg_color=ACCENT,
+                      hover_color=ACCENT_DARK, text_color="white",
+                      command=self._save).pack(side="right", expand=True,
+                                                fill="x", padx=(10, 0))
+
+        body = ctk.CTkScrollableFrame(w, fg_color="transparent", corner_radius=0)
+        body.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         def label(text):
             ctk.CTkLabel(body, text=text, font=(FONT, 11), text_color=SUB,
-                         anchor="w").pack(fill="x", pady=(6, 0))
+                         anchor="w").pack(fill="x", padx=6, pady=(8, 0))
 
         def entry(placeholder=""):
             e = ctk.CTkEntry(body, font=(FONT, 12), height=36, corner_radius=10,
                              fg_color=CARD, border_width=0, text_color=INK,
                              placeholder_text=placeholder,
                              placeholder_text_color=FAINT)
-            e.pack(fill="x", pady=(4, 0))
+            e.pack(fill="x", padx=6, pady=(4, 0))
             return e
 
         label("计划名称")
@@ -168,27 +190,27 @@ class NewPlanDialog:
 
         label("开始时间 与 时长（滚轮选取）")
         card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=14)
-        card.pack(fill="x", pady=(4, 0))
+        card.pack(fill="x", padx=6, pady=(4, 0))
         wheels = ctk.CTkFrame(card, fg_color="transparent")
         wheels.pack(pady=8)
         now = dt.datetime.now() + dt.timedelta(minutes=2)
         self.w_hour = WheelPicker(wheels, [f"{h:02d}" for h in range(24)],
-                                  initial=now.hour, width=68, bg=CARD)
-        self.w_hour.pack(side="left", padx=(10, 2))
+                                  initial=now.hour, width=60, bg=CARD)
+        self.w_hour.pack(side="left", padx=(6, 2))
         ctk.CTkLabel(wheels, text=":", font=(FONT, 16, "bold"),
                      text_color=INK).pack(side="left")
         self.w_min = WheelPicker(wheels, [f"{m:02d}" for m in range(60)],
-                                 initial=now.minute, width=68, bg=CARD)
-        self.w_min.pack(side="left", padx=(2, 10))
+                                 initial=now.minute, width=60, bg=CARD)
+        self.w_min.pack(side="left", padx=(2, 6))
         ctk.CTkLabel(wheels, text="做", font=(FONT, 12),
                      text_color=SUB).pack(side="left")
         self.w_dur = WheelPicker(wheels, self.DURATIONS,
                                  initial=self.DURATIONS.index(10),
-                                 width=60, bg=CARD,
+                                 width=58, bg=CARD,
                                  on_change=self._toggle_custom)
         self.w_dur.pack(side="left", padx=(4, 2))
         ctk.CTkLabel(wheels, text="分钟", font=(FONT, 12),
-                     text_color=SUB).pack(side="left", padx=(2, 8))
+                     text_color=SUB).pack(side="left", padx=(2, 6))
 
         self.e_custom = entry("自定义分钟数（1-999）")
         self.e_custom.pack_forget()
@@ -199,7 +221,8 @@ class NewPlanDialog:
         ctk.CTkButton(body, text="从运行中的应用选择…", font=(FONT, 10),
                       height=26, corner_radius=13, fg_color=ACCENT_BG,
                       text_color=ACCENT_DARK, hover_color="#D9EEE3",
-                      command=self._open_picker).pack(anchor="w", pady=(4, 0))
+                      command=self._open_picker).pack(anchor="w", padx=6,
+                                                      pady=(6, 0))
 
         label("窗口标题关键词（可选）")
         self.e_title = entry("标题里含这个词也算合规")
@@ -207,17 +230,14 @@ class NewPlanDialog:
         ctk.CTkLabel(body,
                      text="关联应用按进程判定；至少选一个关联应用，"
                           "或填一个窗口标题关键词。",
-                     font=(FONT, 9), text_color=FAINT, wraplength=330,
-                     justify="left").pack(fill="x", pady=(8, 0))
-
-        ctk.CTkButton(body, text="保存计划", font=(FONT, 13, "bold"), height=42,
-                      corner_radius=21, fg_color=ACCENT,
-                      hover_color=ACCENT_DARK, text_color="white",
-                      command=self._save).pack(fill="x", pady=(12, 0))
+                     font=(FONT, 9), text_color=FAINT, wraplength=310,
+                     justify="left").pack(fill="x", padx=6, pady=(10, 12))
 
     def _toggle_custom(self, val):
         if val == "自定义":
-            self.e_custom.pack(fill="x", pady=(6, 0))
+            self.e_custom.pack(fill="x", padx=6, pady=(6, 0))
+            # 把光标送进去，用户不用再找它在哪
+            self.e_custom.focus_set()
         else:
             self.e_custom.pack_forget()
 
@@ -266,6 +286,9 @@ class ProcessPickerDialog:
         w.geometry("400x440")
         w.configure(bg=BG)
         w.attributes("-topmost", True)
+        w.transient(parent)
+        set_icon(w)
+        w.resizable(True, True)
         self.win = w
         self.on_apply = on_apply
 

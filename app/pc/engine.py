@@ -17,7 +17,7 @@ DONE, UNFINISHED, EARLY_END = "完成", "未完成", "提前结束"
 
 # 可调参数（秒）
 GRACE_DEVIATION_SEC = 60        # 去抖宽限：偏离不足 60 秒不计
-FIRST_RECHECK_SEC = 5 * 60      # 到点后第一次回查（催促从这之后才可能启动）
+FIRST_RECHECK_SEC = 5 * 60      # 到点后第一次回查（v0.3 起不再用于升级判定，只留在会话里备查）
 L3_CONTINUOUS_SEC = 5 * 60      # 连续确认偏离超过此值升级 L3
 COOLDOWN_CONTINUOUS_SEC = 10 * 60  # 连续确认偏离超过此值进入沉默冷却
 GAP_SEC = 120                   # 两次检测间隔超过此值记为"未观测"空洞
@@ -185,9 +185,15 @@ class Engine:
                 s.deviation_sec += delta
                 s.cont_dev_sec += delta
 
-        # ---- 升级阶梯（第一次回查之后才"上膛"）----
-        armed = s.recheck_at is not None and now >= s.recheck_at
-        if s.state == RUNNING and armed:
+        # ---- 升级阶梯 ----
+        # L2 看「偏离已确认」（连续偏离满 60 秒宽限），L3 看「连续偏离 ≥5 分钟」。
+        #
+        # 以前整段挂在"首次回查（到点 +5 分钟）"后面，结果：
+        # 到点就没进来的场景里，回查那一刻 cont_dev 已经 ≥5 分钟，
+        # new_level 一次就判 3 —— L2「担心」那一档永远看不到，第一次出声就是最重的语气。
+        # 现在按偏离本身判定，L2 在约 1 分钟出现、L3 在约 5 分钟出现，与 spec 的阶梯一致。
+        # （"延迟回查"的本意是不在到点瞬间就骂人，这由 60 秒宽限负责，不需要再叠 5 分钟。）
+        if s.state == RUNNING:
             if s.dev_confirmed:
                 new_level = 3 if s.cont_dev_sec >= L3_CONTINUOUS_SEC else 2
                 if new_level != s.level:

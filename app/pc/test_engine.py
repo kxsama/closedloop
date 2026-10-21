@@ -150,4 +150,16 @@ assert any(a["type"] == "settle" for a in acts10)
 assert eng.tick(T0 + MISS_SETTLE_SEC + 1200, BAD) == []
 print("10 错过收敛 OK")
 
+# 11. L2 可达（v0.3）：到点就没进来，也应当先看到 L2「担心」，而不是直接跳 L3
+#     回归对象：升级判定曾整段挂在"到点 +5 分钟"的回查后面，
+#     那一刻连续偏离早已 ≥5 分钟，new_level 一次就判 3。
+eng = Engine(make_plan(60, fuse=99))
+acts11 = run(eng, 420, lambda t: BAD)          # 全程在别的应用里，7 分钟
+lv11 = [a for a in acts11 if a["type"] == "escalate"]
+assert lv11, "一直没有升档"
+assert lv11[0]["level"] == 2, lv11              # 第一次升档必须是 L2
+assert any(a["level"] == 3 for a in lv11), lv11  # 之后再到 L3
+# L2 出现的时刻应在 1 分钟左右，而不是 5 分钟
+print("11 L2 先于 L3 可达 OK")
+
 print("\n全部通过")

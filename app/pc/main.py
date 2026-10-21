@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 import uuid
 from dataclasses import asdict
+from tkinter import messagebox
 
 import engine as E
 import monitor
@@ -14,7 +15,7 @@ import persona
 from store import Store
 from ui import MainWindow
 from windows import (FuseDialog, InfoDialog, NagWindow, ReasonDialog,
-                     STYLE_DONE, STYLE_INFO)
+                     STYLE_DONE, STYLE_INFO, set_icon)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TICK_MS = 1000
@@ -129,33 +130,47 @@ def update_nag(now: float) -> None:
     for p in plans:
         eng = engines.get(p.id)
         if eng and eng.session.state == E.RUNNING:
-            lvl = eng.session.level or 1
-            if best is None or lvl > best[0]:
-                best = (lvl, p, eng)
+            s = eng.session
+            # 排序口径：先看"是否已切走"，再看 level。
+            # 只比 level 时，一个刚切走（level 仍是 1）的计划会输给合规计划，
+            # 小窗就去显示那个合规的了——正好是最该看见的那条被顶掉。
+            rank = (1 if s.dev_confirmed else 0, s.level or 1)
+            if best is None or rank > best[0]:
+                best = (rank, p, eng)
     if best is None:
         nag.hide()
         return
-    lvl, p, eng = best
+    _, p, eng = best
     st = eng.status()
-    # 挂机提醒：合规计时中但 3 分钟无键鼠输入——只提醒，不停表（读长文也会误报，温和处理）
+    lvl = eng.session.level or 1
+
+    # 挂机提醒：合规计时中但 3 分钟无键鼠输入——只提醒，不停表（读长文也会误报）
     idle = monitor.idle_seconds()
     if idle > 180 and not st["deviating"]:
         key = (p.id, "idle")
         if key != nag_text_key:
             nag_text_key = key
             nag.update(1,
-                       f"你好像 {int(idle // 60)} 分钟没操作了——「{p.name}」的计时还在走。"
-                       f"如果只是挂着，记得诚实结束。",
+                       f"「{p.name}」{int(idle // 60)} 分钟没操作了，计时还在走。"
+                       f"挂着的话，记得诚实结束。",
                        f"有效 {st['effective_min']} / 剩 {st['left_min']} 分")
         nag.show()
         return
-    key = (p.id, lvl, st["deviation_min"], st["effective_min"])
+
+    # 状态看 deviating，语气看 level —— 两者别再混用（v0.3）。
+    # 以前直接拿 level 上色，而 level 要到点 +5 分钟才升档，
+    # 于是头 5 分钟小窗一直绿着说「计时中」，主界面却已经写「已切走」。
+    style_level = 1
+    if st["deviating"]:
+        style_level = 3 if lvl >= 3 else 2
+
+    key = (p.id, style_level, st["deviation_min"], st["effective_min"])
     if key != nag_text_key:
         nag_text_key = key
-        nag.update(max(lvl, 1), persona.say(max(lvl, 1), ctx_of(p, st)),
+        nag.update(style_level, persona.say(style_level, ctx_of(p, st)),
                    f"有效 {st['effective_min']} / 剩 {st['left_min']} 分"
                    f" · 切走 {st['deviation_min']} 分")
-    if now < nag_snooze_until and lvl < 3:
+    if now < nag_snooze_until and style_level < 3:
         nag.hide()
     else:
         nag.show()
@@ -241,6 +256,17 @@ def on_new(d: dict) -> None:
 
 def on_delete(plan_id: str) -> None:
     global plans
+    plan = next((p for p in plans if p.id == plan_id), None)
+    if plan is None:
+        return
+    # 二次确认（v0.3）：删除按钮原来就在「提前结束」右边 6 px，误点即不可恢复。
+    # 这类记录型应用删掉的不只是一个配置，是它承载的那句"我说过要做"。
+    if not messagebox.askyesno(
+        "删除计划",
+        f"删除「{plan.name}」？\n\n计划会从列表消失；已经结算的历史账本保留。",
+        parent=root,
+    ):
+        return
     plans = [p for p in plans if p.id != plan_id]
     engines.pop(plan_id, None)
     save_plans()
@@ -268,6 +294,7 @@ import customtkinter as ctk
 
 ctk.set_appearance_mode("light")
 root = ctk.CTk()
+set_icon(root)
 ui = MainWindow(root, on_new=on_new, on_delete=on_delete,
                 on_early_end=on_early_end)
 nag = NagWindow(root, on_go_back=snooze,
