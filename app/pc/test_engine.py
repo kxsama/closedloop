@@ -6,7 +6,7 @@
 """
 import datetime as dt
 
-from engine import (COOLDOWN, DONE, EARLY_END, RUNNING, Engine, Plan)
+from engine import (COOLDOWN, DONE, EARLY_END, MISS_SETTLE_SEC, RUNNING, Engine, Plan)
 
 # T0 必须锚定"今天 15:00"——引擎按真实日期计算开始时间，写死日期过几天就全挂
 T0 = dt.datetime.now().replace(hour=15, minute=0, second=0, microsecond=0).timestamp()
@@ -137,5 +137,17 @@ assert s.deviation_count == 0 and s.deviation_sec == 0, (s.deviation_count, s.de
 # 正确：只从第 57 秒进来后开始计时（≈540s）；若宽限误补记会多 60s（≈600s）
 assert s.effective_sec <= 555, s.effective_sec
 print("9 晚到不补记 OK")
+
+# 10. 错过收敛（v0.8）：开始 3 小时仍没开始 → 自动记"未完成"，且不再追击
+eng = Engine(make_plan(30))
+acts10 = run(eng, MISS_SETTLE_SEC + 600, lambda t: BAD)   # 一直在别的应用里
+s = eng.session
+assert s.state == "SETTLED", s.state
+assert s.result == "未完成", s.result
+assert s.reason == "未开始", s.reason
+assert any(a["type"] == "settle" for a in acts10)
+# 收敛之后再 tick 不应再产生任何提醒
+assert eng.tick(T0 + MISS_SETTLE_SEC + 1200, BAD) == []
+print("10 错过收敛 OK")
 
 print("\n全部通过")

@@ -29,6 +29,9 @@ class MonitorService : Service() {
     companion object {
         val engines = ConcurrentHashMap<String, Engine>()
 
+        /** 错过追击次数上限（v0.8）：追 5 次不来就别追了，等自动结算 */
+        private const val MISS_NAG_MAX = 5
+
         /** 熔断待确认（由 Activity 弹窗处理） */
         @Volatile
         var pendingFusePlanId: String? = null
@@ -66,6 +69,10 @@ class MonitorService : Service() {
     /** 每计划上一次「有声提醒」时刻（秒），用于重复提醒节流 */
     private val lastNagAt = ConcurrentHashMap<String, Long>()
 
+    /** 错过追击计数（v0.8）：每计划每天最多追 5 次，之后闭嘴等自动结算。
+     *  旧实现 `late` 无上限，8 点的计划没做会被追到半夜。 */
+    private val missNagCount = ConcurrentHashMap<String, Int>()
+
     /** 息屏开始时刻（秒）；null = 亮屏 */
     private var screenOffSince: Long? = null
     private var lastScreenNagAt = 0L
@@ -75,6 +82,9 @@ class MonitorService : Service() {
     private var lastIdleNagAt = 0L
 
     private var tickCount = 0L
+
+    /** 引擎对应的日期。跨天必须重建——按天排期后，周一的计划不能跑到周二去（v0.8）。 */
+    private var engineDay: LocalDate = LocalDate.now()
 
     /** 前台状态保持：最近一次确知的前台包名（v0.4 修复核心）。
      *  旧实现只查最近 10 秒事件，看书这种"无切换"场景 10 秒后查不到事件 → 返回 null → 计时静默冻结。
@@ -114,16 +124,27 @@ class MonitorService : Service() {
 
     fun reloadEngines() {
         val plans = PlanStore.loadPlans(this)
-        val today = LocalDate.now().toString()
+        val todayDate = LocalDate.now()
+        val today = todayDate.toString()
         val saved = PlanStore.loadSessions(this)
         val keep = mutableSetOf<String>()
         for (p in plans) {
             if (!p.enabled) continue
+            // v0.8 按天排期：今天不适用（没勾这天 / 单双周不符）就不建引擎，
+            // 不建就不会提醒、不会追、也不会在首页占位。
+            if (!p.appliesOn(todayDate)) continue
             keep.add(p.id)
+            val eff = p.forDay(todayDate)
             val existing = engines[p.id]
-            if (existing == null || existing.session.date != today) {
+            // 计划被编辑过（时间/时长变了）也要重建，否则引擎还按老时间跑
+            val stale = existing != null && (
+                existing.session.date != today ||
+                    existing.plan.start != eff.start ||
+                    existing.plan.targetMinutes != eff.targetMinutes
+                )
+            if (existing == null || stale) {
                 val sess = saved[p.id]?.takeIf { it.date == today && it.planId == p.id }
-                engines[p.id] = if (sess != null) Engine(p, session = sess) else Engine(p)
+                engines[p.id] = if (sess != null) Engine(eff, session = sess) else Engine(eff)
             }
         }
         engines.keys.retainAll(keep)
@@ -141,6 +162,15 @@ class MonitorService : Service() {
 
     private fun tick() {
         val now = System.currentTimeMillis() / 1000
+        // 跨天：先把昨天没结算的如实记一笔，再重建引擎（跑什么由"今天适用哪些计划"决定）
+        val todayDate = LocalDate.now()
+        if (todayDate != engineDay) {
+            engineDay = todayDate
+            settleYesterday()
+            missNagCount.clear()
+            lastNagAt.clear()
+            reloadEngines()
+        }
         val interactive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val fg = if (interactive) foregroundPackage() else null
 
@@ -195,7 +225,11 @@ class MonitorService : Service() {
 
     /** 有声重复提醒：这是核心机制——不是通知一次就完，而是追到你去为止。 */
     private fun repeatedReminders(now: Long, interactive: Boolean, best: Triple<Int, Engine, Map<String, Any>>?) {
-        // ① 每个进行中的计划：错过开始（每 2 分钟）/ 偏离中（每 1 分钟）
+        // v0.8 夜间静默：22:30–07:00 一律不发声（错过/切走/息屏挂机/亮屏挂机全静音）。
+        // 常驻通知照常更新，白天再看得到。设了不做的计划在半夜弹全屏，是卸载的头号原因。
+        if (isQuietHours()) return
+
+        // ① 每个进行中的计划：错过开始（每 2 分钟，最多 5 次）/ 偏离中（每 1 分钟）
         for ((_, eng) in engines) {
             val s = eng.session
             if (s.state != SState.RUNNING) continue
@@ -204,13 +238,17 @@ class MonitorService : Service() {
             val eff = s.effectiveSec
 
             when {
-                // 到点后一直没开始
+                // 到点后一直没开始（最多追 5 次，之后交给引擎的错过收敛自动结算）
                 eff < 5 && late > 120 && now - last >= 120 -> {
-                    Notify.remind(
-                        this, eng.plan.id.hashCode(), "已错过 ${(late / 60).toInt()} 分钟",
-                        "到点 ${(late / 60).toInt()} 分钟了，「${eng.plan.name}」还没开始。",
-                    )
-                    lastNagAt[eng.plan.id] = now
+                    val n = missNagCount[eng.plan.id] ?: 0
+                    if (n < MISS_NAG_MAX) {
+                        Notify.remind(
+                            this, eng.plan.id.hashCode(), "已错过 ${(late / 60).toInt()} 分钟",
+                            "到点 ${(late / 60).toInt()} 分钟了，「${eng.plan.name}」还没开始。",
+                        )
+                        lastNagAt[eng.plan.id] = now
+                        missNagCount[eng.plan.id] = n + 1
+                    }
                 }
                 // 偏离追击
                 s.devConfirmed && now - last >= 60 -> {
@@ -257,8 +295,13 @@ class MonitorService : Service() {
         }
     }
 
-    private fun ctxOf(eng: Engine, st: Map<String, Any>): Map<String, Any> {
-        val eff = (st["effectiveSec"] as Double / 60).toInt()
+    /** 夜间静默：22:30 到次日 07:00 不发有声提醒。 */
+    private fun isQuietHours(): Boolean {
+        val t = java.time.LocalTime.now()
+        return t.hour >= 23 || (t.hour == 22 && t.minute >= 30) || t.hour < 7
+    }
+
+    private fun ctxOf(eng: Engine, st: Map<String, Any>): Map<String, Any> {        val eff = (st["effectiveSec"] as Double / 60).toInt()
         val left = ((st["targetSec"] as Double - st["effectiveSec"] as Double) / 60).toInt()
         return mapOf(
             "plan" to eng.plan.name,
@@ -317,6 +360,15 @@ class MonitorService : Service() {
     private fun persistSessions() {
         val map = engines.entries.associate { it.key to it.value.session }
         PlanStore.saveSessions(this, map)
+    }
+
+    /** 跨天收尾（v0.8）：昨天还没结算的计划按"未完成"落账，不让它凭空消失。
+     *  没有这一步时，日期一翻旧会话被直接丢弃，账本里什么都不留——镜子就不诚实了。 */
+    private fun settleYesterday() {
+        for ((_, eng) in engines) {
+            if (eng.session.state == SState.SETTLED) continue
+            for (a in eng.abandon()) handleAct(eng, a)
+        }
     }
 
     /** 增量读取 UsageEvents 维护 currentFg，顺带刷新"最近用户活动"时间。

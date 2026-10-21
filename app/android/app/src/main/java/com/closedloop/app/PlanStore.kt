@@ -33,11 +33,43 @@ object PlanStore {
 
     fun loadPlans(ctx: Context): MutableList<Plan> {
         val json = pref(ctx).getString(KEY_PLANS, null) ?: return mutableListOf()
-        return try {
+        val list: MutableList<Plan> = try {
             val type = object : TypeToken<MutableList<Plan>>() {}.type
             gson.fromJson(json, type) ?: mutableListOf()
         } catch (e: Exception) {
             mutableListOf()
+        }
+        list.forEach { normalize(it) }
+        return list
+    }
+
+    /**
+     * 老数据归一化（v0.8）。
+     *
+     * **为什么必须做**：Gson 反序列化走 Unsafe 实例化，**不执行 Kotlin 构造器**，
+     * 所以 `slots: MutableMap<Int, DaySlot>? = null` 这类"默认值"对已存在的 JSON 不生效——
+     * 字段会是 null / 0 / 空。凡是新增字段，都在这里补一次兜底，别指望默认值。
+     */
+    private fun normalize(p: Plan) {
+        if (p.start.isBlank() || !p.start.contains(":")) p.start = "20:00"
+        if (p.targetMinutes !in 1..999) p.targetMinutes = 30
+        if (p.weekMode !in setOf("all", "odd", "even")) p.weekMode = "all"
+
+        val slots = p.slots
+        if (slots == null) {
+            // v0.7 及以前的计划：没有按天概念，语义就是"每天"→ 7 天全开，用基准时间
+            p.slots = (1..7).associateWith { DaySlot(true, p.start, p.targetMinutes) }.toMutableMap()
+        } else {
+            // 缺天/脏值补齐：一天都不能缺，否则那天会走 slotOf 的回落分支，行为不可预期
+            for (d in 1..7) {
+                val s = slots[d]
+                if (s == null) {
+                    slots[d] = DaySlot(true, p.start, p.targetMinutes)
+                } else {
+                    if (s.start.isBlank() || !s.start.contains(":")) s.start = p.start
+                    if (s.minutes !in 1..999) s.minutes = p.targetMinutes
+                }
+            }
         }
     }
 
@@ -48,6 +80,14 @@ object PlanStore {
     fun addPlan(ctx: Context, plan: Plan) {
         val plans = loadPlans(ctx)
         plans.add(plan)
+        savePlans(ctx, plans)
+    }
+
+    /** 原地替换同 id 的计划（v0.8 编辑功能）。找不到就追加。 */
+    fun updatePlan(ctx: Context, plan: Plan) {
+        val plans = loadPlans(ctx)
+        val i = plans.indexOfFirst { it.id == plan.id }
+        if (i >= 0) plans[i] = plan else plans.add(plan)
         savePlans(ctx, plans)
     }
 

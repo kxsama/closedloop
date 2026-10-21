@@ -5,15 +5,31 @@ import java.time.ZoneId
 
 /** 计划与核心状态机：与 PC 版 engine.py 完全同构（有效时长制/去抖/升级/熔断/未观测）。 */
 
+/**
+ * 某一天的排期槽位（v0.8）。
+ * 设计原则：**以天为唯一真源**——内部永远存周一到周日 7 个槽位，
+ * 界面上"勾选星期几"只是把这 7 个槽位批量赋值，不再单独维护一份"重复规则"，
+ * 否则两套数据早晚打架（勾了周一但槽位是关的，到底算不算？）。
+ */
+data class DaySlot(
+    var on: Boolean = true,
+    var start: String = "20:00",     // "HH:MM"
+    var minutes: Int = 30,
+)
+
 data class Plan(
     val id: String,
     var name: String,
-    var start: String,                      // "HH:MM"
-    var targetMinutes: Int,
+    var start: String,                      // 基准开始时间（新建时的默认值）
+    var targetMinutes: Int,                 // 基准时长（新建时的默认值）
     var packages: MutableList<String>,      // 关联应用包名
     var titleKeyword: String = "",
     var fuseRatio: Double = 1.0,
     var enabled: Boolean = true,
+    /** 1=周一 … 7=周日（ISO）。null = 老数据，按"每天生效、用基准时间"处理。 */
+    var slots: MutableMap<Int, DaySlot>? = null,
+    /** 单双周：all=每周 / odd=单周 / even=双周（按 ISO 周数奇偶判定） */
+    var weekMode: String = "all",
 ) {
     fun startEpoch(day: LocalDate): Long {
         val parts = start.split(":")
@@ -23,7 +39,35 @@ data class Plan(
 
     fun matches(pkg: String?): Boolean =
         pkg != null && packages.any { it.equals(pkg, ignoreCase = true) }
+
+    /** 取某天的槽位；老数据/缺项一律回落到基准时间与时长，且默认开启。 */
+    fun slotOf(day: LocalDate): DaySlot {
+        val wd = day.dayOfWeek.value
+        slots?.get(wd)?.let { return it }
+        return DaySlot(true, start, targetMinutes)
+    }
+
+    /** 单双周是否命中。用 ISO 周数奇偶——稳定、可解释；界面上会显示"本周算单/双周"供核对。 */
+    fun weekMatch(day: LocalDate): Boolean {
+        if (weekMode == "all") return true
+        val week = day.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)
+        val isOdd = week % 2 == 1
+        return if (weekMode == "odd") isOdd else !isOdd
+    }
+
+    /** 今天要不要做这件事（停用 / 当天关 / 单双周不符 → 不做）。 */
+    fun appliesOn(day: LocalDate): Boolean = enabled && slotOf(day).on && weekMatch(day)
+
+    /** 把某天排期"拍平"成当天生效的计划——Engine 只认 start/targetMinutes，其余字段原样带过去。 */
+    fun forDay(day: LocalDate): Plan {
+        val s = slotOf(day)
+        return copy(start = s.start, targetMinutes = s.minutes)
+    }
 }
+
+/** ISO 周数是单还是双，用于界面提示"本周：单周/双周"。 */
+fun weekIsOdd(day: LocalDate): Boolean =
+    day.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR) % 2 == 1
 
 enum class SState { WAITING, RUNNING, COOLDOWN, SETTLED }
 
@@ -79,6 +123,7 @@ class Engine(
         const val L3_AFTER_SEC = 300L       // 连续偏离升级 L3
         const val COOLDOWN_AFTER_SEC = 600L // 连续偏离进入沉默
         const val GAP_SEC = 120L            // 监测空洞
+        const val MISS_SETTLE_SEC = 3 * 3600L   // 开始后 3 小时仍未开始 → 自动记未完成（v0.8 错过收敛）
         const val RESULT_DONE = "完成"
         const val RESULT_UNFINISHED = "未完成"
         const val RESULT_EARLY_END = "提前结束"
@@ -150,6 +195,18 @@ class Engine(
                     acts.add(Act.Remind)
                 }
             }
+            return acts
+        }
+
+        // 错过收敛（v0.8）：开始后 3 小时仍未开始 → 自动结算为"未完成"，并停止追击。
+        // 没有这条时，"设了没做"会被每 2 分钟追一次、一直追到半夜，"late" 无上限；
+        // 同时日终不归档会让这条计划凭空消失，账本里什么都不留。现在它会被如实记一笔。
+        // 注意必须覆盖 COOLDOWN：一直没开始会先被判"切走"、10 分钟后进沉默冷却，
+        // 只判 RUNNING 会让这类计划永远停在冷却里（PC 测试用例 10 抓出）。
+        if ((s.state == SState.RUNNING || s.state == SState.COOLDOWN) && s.effectiveSec < 5 &&
+            now - plan.startEpoch(today) >= MISS_SETTLE_SEC
+        ) {
+            acts.addAll(settle(RESULT_UNFINISHED, "未开始"))
             return acts
         }
 

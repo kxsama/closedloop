@@ -21,6 +21,7 @@ FIRST_RECHECK_SEC = 5 * 60      # 到点后第一次回查（催促从这之后�
 L3_CONTINUOUS_SEC = 5 * 60      # 连续确认偏离超过此值升级 L3
 COOLDOWN_CONTINUOUS_SEC = 10 * 60  # 连续确认偏离超过此值进入沉默冷却
 GAP_SEC = 120                   # 两次检测间隔超过此值记为"未观测"空洞
+MISS_SETTLE_SEC = 3 * 3600      # 开始后 3 小时仍未开始 → 自动记未完成（v0.8 错过收敛）
 
 
 @dataclass
@@ -137,6 +138,15 @@ class Engine:
                 s.level = 1
                 s.recheck_at = now + FIRST_RECHECK_SEC
                 acts.append({"type": "remind", "level": 1})
+            return acts
+
+        # 错过收敛（v0.8，与 Android Engine.MISS_SETTLE_SEC 同构）：
+        # 开始后 3 小时仍未开始 → 自动结算为"未完成"，停止追击。
+        # 没有这条时，"设了没做"会被无限追下去，账本里也留不下记录。
+        # 必须覆盖 COOLDOWN：一直没开始会先判偏离、10 分钟后进沉默冷却。
+        if (s.state in (RUNNING, COOLDOWN) and s.effective_sec < 5
+                and now - self.plan.start_epoch(self.today) >= MISS_SETTLE_SEC):
+            acts.extend(self._settle(UNFINISHED, reason="未开始"))
             return acts
 
         # ---- RUNNING / COOLDOWN 计时与偏离 ----
