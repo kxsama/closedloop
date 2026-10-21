@@ -252,8 +252,11 @@ class Engine(
             }
         }
 
-        // 升级逻辑：只在 RUNNING 且过了首次回查后启用
-        if (s.state == SState.RUNNING && now >= s.recheckAt) {
+        // 升级阶梯（v0.10，与 PC engine.py 同构）。
+        // L2 看"偏离已确认"（连续偏离满 60 秒宽限），L3 看"连续偏离 ≥5 分钟"。
+        // 以前整段挂在"首次回查（到点 +5 分钟）"后面：到点就没进来的场景里，
+        // 回查那一刻连续偏离早已 ≥5 分钟，一次就判 3 —— L2「担心」永远看不到。
+        if (s.state == SState.RUNNING) {
             if (s.devConfirmed) {
                 val newLevel = if (s.contDevSec >= L3_AFTER_SEC) 3 else 2
                 if (newLevel != s.level) {
