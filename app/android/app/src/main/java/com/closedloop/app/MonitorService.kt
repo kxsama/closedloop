@@ -15,6 +15,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -58,12 +59,23 @@ class MonitorService : Service() {
         }
 
         fun start(ctx: Context) {
-            val i = Intent(ctx, MonitorService::class.java)
-            ContextCompat.startForegroundService(ctx, i)
+            // 兜住 ForegroundServiceStartNotAllowedException（Android 12+ 后台起前台服务受限）。
+            // 从开机广播里拉起时尤其可能撞上；崩在 receiver 里会变成"应用老是停止运行"，
+            // 比"这次没起来"糟糕得多——下次打开应用就恢复了。
+            try {
+                ContextCompat.startForegroundService(ctx, Intent(ctx, MonitorService::class.java))
+            } catch (_: Exception) {
+            }
+        }
+
+        /** 落盘全部会话。服务、通知动作、Activity 三处都要落盘，抽一个静态入口免得各写一份。 */
+        fun persist(ctx: Context) {
+            PlanStore.saveSessions(ctx, engines.entries.associate { it.key to it.value.session })
         }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var loopJob: Job? = null
     private val labelCache = ConcurrentHashMap<String, String>()
 
     /** 每计划上一次「有声提醒」时刻（秒），用于重复提醒节流 */
@@ -108,7 +120,10 @@ class MonitorService : Service() {
             else 0,
         )
         reloadEngines()
-        scope.launch { loop() }
+        // 只在没有循环时启动一个（v0.9）。以前每次 start() 都 launch 一个新 loop，
+        // 而 Activity 每次 onResume 都会 start()——一次会话里切几次后台就多出几条循环在跑。
+        // 计时按真实时间差算不会算错，但无谓地耗电、也让状态更新互相打架。
+        if (loopJob?.isActive != true) loopJob = scope.launch { loop() }
         return START_STICKY
     }
 
@@ -199,7 +214,10 @@ class MonitorService : Service() {
             val ctx = ctxOf(eng, st)
             val plan = eng.plan
             val left = ((st["targetSec"] as Double - st["effectiveSec"] as Double) / 60).toInt()
+            val snoozeTill = PlanStore.snoozeUntil(this, plan.id)
             val text = when {
+                // 静音期间常驻通知要说清楚"我不是不管了"，否则用户会以为坏了
+                snoozeTill > now -> "已静音到 ${hhmm(snoozeTill)}，计时照走"
                 eng.session.devConfirmed -> Persona.say(lvl.coerceAtLeast(2), ctx)
                 else -> "${plan.name}：有效 ${(st["effectiveSec"] as Double / 60).toInt()} 分 / 剩 $left 分"
             }
@@ -223,7 +241,8 @@ class MonitorService : Service() {
         onTick?.invoke()
     }
 
-    /** 有声重复提醒：这是核心机制——不是通知一次就完，而是追到你去为止。 */
+    /** 有声重复提醒：这是核心机制——不是通知一次就完，而是追到你去为止。
+     *  v0.9：用户点了「稍后 15 分钟」的计划在这一段时间内完全不出声。 */
     private fun repeatedReminders(now: Long, interactive: Boolean, best: Triple<Int, Engine, Map<String, Any>>?) {
         // v0.8 夜间静默：22:30–07:00 一律不发声（错过/切走/息屏挂机/亮屏挂机全静音）。
         // 常驻通知照常更新，白天再看得到。设了不做的计划在半夜弹全屏，是卸载的头号原因。
@@ -233,6 +252,8 @@ class MonitorService : Service() {
         for ((_, eng) in engines) {
             val s = eng.session
             if (s.state != SState.RUNNING) continue
+            // 用户按过「稍后」：这一段时间内不追。计时不受影响，真去做了照样记有效。
+            if (PlanStore.snoozeUntil(this, eng.plan.id) > now) continue
             val last = lastNagAt[eng.plan.id] ?: 0L
             val late = now - eng.plan.startEpoch(LocalDate.now())
             val eff = s.effectiveSec
@@ -245,6 +266,7 @@ class MonitorService : Service() {
                         Notify.remind(
                             this, eng.plan.id.hashCode(), "已错过 ${(late / 60).toInt()} 分钟",
                             "到点 ${(late / 60).toInt()} 分钟了，「${eng.plan.name}」还没开始。",
+                            eng.plan.id,
                         )
                         lastNagAt[eng.plan.id] = now
                         missNagCount[eng.plan.id] = n + 1
@@ -256,6 +278,7 @@ class MonitorService : Service() {
                     Notify.remind(
                         this, eng.plan.id.hashCode(), eng.plan.name,
                         Persona.say(s.level.coerceAtLeast(2), ctxOf(eng, st)),
+                        eng.plan.id,
                     )
                     lastNagAt[eng.plan.id] = now
                 }
@@ -263,8 +286,10 @@ class MonitorService : Service() {
         }
 
         // ② 息屏挂机：计时已暂停的显性提醒（每 5 分钟）
+        //    用户按过「稍后」就一起静音——他说的"别吵我"不该只对一半提醒生效
+        val bestSnoozed = best != null && PlanStore.snoozeUntil(this, best.second.plan.id) > now
         val off = screenOffSince
-        if (!interactive && off != null && best != null && now - off >= 300 &&
+        if (!interactive && off != null && best != null && !bestSnoozed && now - off >= 300 &&
             now - lastScreenNagAt >= 300
         ) {
             val planName = best.second.plan.name
@@ -272,13 +297,14 @@ class MonitorService : Service() {
             Notify.remind(
                 this, 4242, "计时已暂停",
                 "手机已息屏 $mins 分钟，${planName} 的计时暂停了——你是睡着了，还是走开了？",
+                best.second.plan.id,
             )
             lastScreenNagAt = now
         }
 
         // ③ 亮屏挂机：前台是关联应用、计时在走，但 10 分钟没有任何交互事件
         // （启发式：读书/看视频不点屏幕也会误报，所以只提醒、不停表）
-        if (interactive && best != null) {
+        if (interactive && best != null && !bestSnoozed) {
             val eng = best.second
             val s = eng.session
             if (!s.devConfirmed && now - lastUserActivityAt >= 600 &&
@@ -289,6 +315,7 @@ class MonitorService : Service() {
                     this, 4343, "还在吗？",
                     "你好像很久没操作了——还在「${appLabel(st["curPkg"] as String)}」里吗？" +
                         "计时仍在走；如果只是挂着，记得诚实结束。",
+                    eng.plan.id,
                 )
                 lastIdleNagAt = now
             }
@@ -299,6 +326,12 @@ class MonitorService : Service() {
     private fun isQuietHours(): Boolean {
         val t = java.time.LocalTime.now()
         return t.hour >= 23 || (t.hour == 22 && t.minute >= 30) || t.hour < 7
+    }
+
+    private fun hhmm(epochSec: Long): String {
+        val t = java.time.Instant.ofEpochSecond(epochSec)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+        return "%02d:%02d".format(t.hour, t.minute)
     }
 
     private fun ctxOf(eng: Engine, st: Map<String, Any>): Map<String, Any> {        val eff = (st["effectiveSec"] as Double / 60).toInt()
@@ -319,7 +352,7 @@ class MonitorService : Service() {
         val ctx = ctxOf(eng, st)
         when (a) {
             is Act.Remind -> {
-                Notify.remind(this, eng.plan.id.hashCode(), "到点了", Persona.say(1, ctx))
+                Notify.remind(this, eng.plan.id.hashCode(), "到点了", Persona.say(1, ctx), eng.plan.id)
                 lastNagAt[eng.plan.id] = System.currentTimeMillis() / 1000
             }
             is Act.Escalate -> Unit
@@ -329,22 +362,13 @@ class MonitorService : Service() {
             is Act.CooldownExit -> Unit
             is Act.FuseAsk -> {
                 pendingFusePlanId = eng.plan.id
-                Notify.remind(this, eng.plan.id.hashCode() + 7, "还要吗？", Persona.say(4, ctx))
+                Notify.remind(this, eng.plan.id.hashCode() + 7, "还要吗？", Persona.say(4, ctx), eng.plan.id)
             }
             is Act.Gap -> Unit
             is Act.Settle -> {
-                PlanStore.appendLedger(this, LocalDate.now().toString(), mapOf(
-                    "planId" to eng.plan.id,
-                    "name" to eng.plan.name,
-                    "result" to a.result,
-                    "effectiveMin" to a.effectiveMin,
-                    "deviationMin" to a.deviationMin,
-                    "deviationCount" to a.deviationCount,
-                    "unfinishedMin" to a.unfinishedMin,
-                    "reason" to a.reason,
-                    "target" to eng.plan.targetMinutes,
-                    "gaps" to eng.session.notObserved.size,
-                ))
+                Ledger.record(this, eng, a)
+                // 结算了就没必要再静音了，留着会让明天的"稍后"莫名其妙的失效/生效
+                PlanStore.clearSnooze(this, eng.plan.id)
                 persistSessions()
                 Notify.nagCancel(this)
                 if (a.result == Engine.RESULT_DONE) {
@@ -357,10 +381,7 @@ class MonitorService : Service() {
         }
     }
 
-    private fun persistSessions() {
-        val map = engines.entries.associate { it.key to it.value.session }
-        PlanStore.saveSessions(this, map)
-    }
+    private fun persistSessions() = persist(this)
 
     /** 跨天收尾（v0.8）：昨天还没结算的计划按"未完成"落账，不让它凭空消失。
      *  没有这一步时，日期一翻旧会话被直接丢弃，账本里什么都不留——镜子就不诚实了。 */

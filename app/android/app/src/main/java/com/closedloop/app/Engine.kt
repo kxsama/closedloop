@@ -287,6 +287,17 @@ class Engine(
 
     fun abandon(): List<Act> = settle(RESULT_UNFINISHED)
 
+    /**
+     * 用户主动放弃这一场（v0.9：通知上的"今天不做了"）。
+     *
+     * 和 `abandon()` 的区别是**如实**：没开始过的记"未完成"，已经做过的记"提前结束"，
+     * 并且都带上原因。账本要能解释自己——只写一个"未完成"、原因为空，
+     * 回头看只会以为自己又没做，而不是"那天我自己喊停了"。
+     */
+    fun giveUp(reason: String): List<Act> =
+        if (session.effectiveSec < 5) settle(RESULT_UNFINISHED, reason)
+        else settle(RESULT_EARLY_END, reason)
+
     fun fuseContinue() {
         session.deviationSec = 0.0
         session.contDevSec = 0.0

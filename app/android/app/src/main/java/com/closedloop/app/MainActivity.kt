@@ -29,6 +29,8 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.NumberPicker
 import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -59,8 +61,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var plansContainer: LinearLayout
     private lateinit var reviewView: TextView
     private lateinit var dateView: TextView
+    private lateinit var headlineView: TextView
+    private lateinit var sublineView: TextView
+    private lateinit var bannerView: TextView
+    private lateinit var reviewSummary: TextView
+    private lateinit var reviewToggle: TextView
+    private lateinit var allPlansView: TextView
     private val handler = Handler(Looper.getMainLooper())
     private var fuseDialogShowing = false
+
+    /** 复盘默认收起：一进来就摊开一堆小字，等于把最重要的信息埋掉 */
+    private var reviewExpanded = false
+
+    /** "全部计划"弹窗的引用：从列表点进编辑时要先关掉它，不然会叠两层对话框 */
+    private var allPlanDialog: AlertDialog? = null
 
     /** 下载进度框（当前实例的）；状态本体在 Updater.DownloadState，切后台回来重挂 */
     private var dlDialog: AlertDialog? = null
@@ -85,22 +99,37 @@ class MainActivity : AppCompatActivity() {
         plansContainer = findViewById(R.id.plansContainer)
         reviewView = findViewById(R.id.review)
         dateView = findViewById(R.id.dateView)
+        headlineView = findViewById(R.id.headline)
+        sublineView = findViewById(R.id.subline)
+        bannerView = findViewById(R.id.banner)
+        reviewSummary = findViewById(R.id.reviewSummary)
+        reviewToggle = findViewById(R.id.reviewToggle)
+        allPlansView = findViewById(R.id.allPlans)
         findViewById<Button>(R.id.btnNew).setOnClickListener { showPlanDialog() }
         findViewById<TextView>(R.id.btnUpdate).apply {
             setOnClickListener { checkUpdate() }
             text = updateBtnLabel()
         }
+        // 提示条只在有问题时出现，点它去体检页
+        bannerView.setOnClickListener { startActivity(Intent(this, DiagnoseActivity::class.java)) }
+        allPlansView.setOnClickListener { showAllPlans() }
+        findViewById<LinearLayout>(R.id.reviewHead).setOnClickListener {
+            reviewExpanded = !reviewExpanded
+            applyReviewVisibility()
+        }
+        applyReviewVisibility()
 
         Notify.ensureChannels(this)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1
-            )
-        }
         MonitorService.onTick = { runOnUiThread { refresh() } }
+
+        // 首次启动直接进体检页（只打扰这一次）。
+        // 以前这里是一次光秃秃的通知权限请求——5 项设置里只管了 1 项，
+        // 剩下 4 项没开时应用照常好看、后台什么都不做，用户不会报 bug，直接卸载。
+        val sp = getSharedPreferences("closedloop", MODE_PRIVATE)
+        if (!sp.getBoolean("onboarded", false)) {
+            sp.edit().putBoolean("onboarded", true).apply()
+            startActivity(Intent(this, DiagnoseActivity::class.java))
+        }
     }
 
     override fun onResume() {
@@ -114,18 +143,9 @@ class MainActivity : AppCompatActivity() {
         }
         // 下载已结束还没处理（比如人不在时下完的）→ 接着走安装/报错
         consumeFinishedDownload()
-        if (!MonitorService.hasUsageAccess(this)) {
-            AlertDialog.Builder(this)
-                .setTitle("需要一个关键权限")
-                .setMessage("「使用情况访问」权限让闭环知道你此刻在哪个应用里——这是整个验收机制的地基。数据只留在本机。")
-                .setPositiveButton("去开启") { _, _ ->
-                    startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                }
-                .setNegativeButton("以后再说", null)
-                .show()
-        } else {
-            MonitorService.start(this)
-        }
+        // 以前这里每次 onResume 都弹一次"需要一个关键权限"，只查 1 项、且拦路。
+        // 现在改成首页顶部的信息条（见 refreshBanner），全部正常就完全不出现。
+        if (MonitorService.hasUsageAccess(this)) MonitorService.start(this)
         handler.post(refresher)
     }
 
@@ -138,26 +158,142 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         val today = LocalDate.now()
-        dateView.text = today.let { "${it.monthValue}月${it.dayOfMonth}日" }
+        dateView.text = "${today.monthValue}月${today.dayOfMonth}日 ${weekdayName(today)}"
         val plans = PlanStore.loadPlans(this)
         val shown = plans.filter { it.appliesOn(today) }   // v0.8：只显示今天适用的
-        plansContainer.removeAllViews()
-        if (shown.isEmpty()) {
-            val tv = TextView(this).apply {
-                text = if (plans.isEmpty()) "还没有计划，点下方按钮给自己定一个"
-                else "今天没有安排。\n" + nextOccurrenceText(plans)
-                setTextColor(SUB); textSize = 12f
-                setPadding(8, 24, 8, 24)
-            }
-            plansContainer.addView(tv)
-        }
         val now = System.currentTimeMillis() / 1000
-        for (p in shown) {
-            plansContainer.addView(planRow(p, now))
-        }
+
+        plansContainer.removeAllViews()
+        if (shown.isEmpty()) plansContainer.addView(emptyState(plans))
+        for (p in shown) plansContainer.addView(planRow(p, now))
+
+        renderHeadline(shown, plans, today, now)
+        refreshBanner()
+        renderAllPlansEntry(plans, shown.size)
         renderReview(shown)
         maybeShowFuseDialog()
     }
+
+    private fun weekdayName(d: LocalDate): String =
+        arrayOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")[d.dayOfWeek.value - 1]
+
+    private fun emptyState(plans: List<Plan>): View = TextView(this).apply {
+        text = if (plans.isEmpty())
+            "还没有计划。\n\n先定一件真想做的小事——20 分钟也算。\n到点我提醒你，然后回来看你到底有没有做。"
+        else "今天没有安排。\n\n" + nextOccurrenceText(plans)
+        setTextColor(SUB)
+        textSize = 12f
+        setLineSpacing(dp(4).toFloat(), 1f)
+        setPadding(dp(4), dp(20), dp(4), dp(22))
+    }
+
+    /**
+     * 一句话现状（v0.9）。
+     *
+     * 以前打开应用看到的是一堆卡片 + 一段等宽小字，用户得自己在脑子里做汇总。
+     * 现在第一眼就给出结论，顺序按"此刻最要紧"排：被切走 > 到点没开始 > 正在做 > 还没到点 > 都结算了。
+     * 两个原则：① 只陈述事实，不评判；② 正在做的时候必须给"还差多少"，那是唯一有用的数字。
+     */
+    private fun renderHeadline(shown: List<Plan>, all: List<Plan>, day: LocalDate, now: Long) {
+        if (shown.isEmpty()) {
+            headlineView.text = if (all.isEmpty()) "还没有计划" else "今天没有安排"
+            sublineView.text = if (all.isEmpty())
+                "先定一件小事，剩下的交给提醒和回查。"
+            else
+                nextOccurrenceText(all)
+            return
+        }
+
+        val target = shown.associateWith { it.forDay(day) }
+        val sess = shown.associateWith {
+            MonitorService.engines[it.id]?.session ?: Session(it.id, day.toString())
+        }
+        fun st(p: Plan) = sess.getValue(p).state
+        fun effMin(p: Plan) = (sess.getValue(p).effectiveSec / 60).toInt()
+        fun tgt(p: Plan) = target.getValue(p).targetMinutes
+
+        val running = shown.filter { st(it) == SState.RUNNING || st(it) == SState.COOLDOWN }
+        val waiting = shown.filter { st(it) == SState.WAITING }
+        val settled = shown.filter { st(it) == SState.SETTLED }
+        val deviating = running.firstOrNull { sess.getValue(it).devConfirmed }
+        val notStarted = running.firstOrNull {
+            sess.getValue(it).effectiveSec < 5 && now >= it.startEpoch(day)
+        }
+
+        // 进行中时，后面还剩几件——一句话交代清楚，不用往下翻
+        val more = if (waiting.isEmpty()) "" else "　之后还有 ${waiting.size} 件。"
+        // 已结算的不再提，避免"3 件事"和"还差 2 件"对不上
+        val nextWait = waiting.minByOrNull { target.getValue(it).start }
+
+        when {
+            deviating != null -> {
+                headlineView.text = "「${deviating.name}」切走了"
+                sublineView.text =
+                    "有效 ${effMin(deviating)} 分 / 目标 ${tgt(deviating)} 分。回到关联应用就接着算。"
+            }
+
+            notStarted != null -> {
+                val late = ((now - notStarted.startEpoch(day)) / 60).toInt()
+                headlineView.text = "「${notStarted.name}」到点了，还没开始"
+                sublineView.text =
+                    "已经过了 $late 分钟。现在进去也算数——从你真正进去那一刻起算。"
+            }
+
+            running.isNotEmpty() -> {
+                val p = running.first()
+                val left = (tgt(p) - effMin(p)).coerceAtLeast(0)
+                headlineView.text = "正在「${p.name}」"
+                sublineView.text = if (left > 0)
+                    "有效 ${effMin(p)} 分，还差 $left 分。$more".trim()
+                else
+                    "目标已经够了，正在结算。"
+            }
+
+            nextWait != null -> {
+                headlineView.text = if (settled.isEmpty()) "今天 ${shown.size} 件事"
+                else "今天 ${shown.size} 件事，已结算 ${settled.size} 件"
+                sublineView.text =
+                    "下一件 ${target.getValue(nextWait).start}「${nextWait.name}」，${tgt(nextWait)} 分钟。" +
+                        if (waiting.size > 1) "（还有 ${waiting.size - 1} 件在后面）" else ""
+            }
+
+            else -> {
+                val totalMin = shown.sumOf { effMin(it) }
+                headlineView.text = "今天 ${shown.size} 件事，都结算了"
+                sublineView.text = "有效投入共 $totalMin 分钟。没有别的要做了。"
+            }
+        }
+    }
+
+    /** 待处理提示条：只在真的有东西要处理时出现，且只说数量，不报警。 */
+    private fun refreshBanner() {
+        val pending = Health.pending(this)
+        if (pending.isEmpty()) {
+            bannerView.visibility = View.GONE
+            return
+        }
+        bannerView.visibility = View.VISIBLE
+        bannerView.text = "还有 ${pending.size} 项设置没打开，" +
+            "可能会让提醒到不了你这儿。点这里看看 ›"
+    }
+
+    /** 全部计划的入口：今天没有的计划（含已暂停的）都得有个地方找回来，否则"暂停"等于"消失"。 */
+    private fun renderAllPlansEntry(plans: List<Plan>, todayCount: Int) {
+        if (plans.isEmpty()) {
+            allPlansView.visibility = View.GONE
+            return
+        }
+        allPlansView.visibility = View.VISIBLE
+        val paused = plans.count { !it.enabled }
+        val others = plans.size - todayCount
+        allPlansView.text = buildString {
+            append("全部计划 ${plans.size} 个")
+            if (others > 0) append(" · 今天以外 $others 个")
+            if (paused > 0) append(" · 已暂停 $paused 个")
+            append("　›")
+        }
+    }
+
 
     /** 今天没安排时，告诉用户下一次是什么时候——按天排期后这是最容易迷路的地方。 */
     private fun nextOccurrenceText(plans: List<Plan>): String {
@@ -188,6 +324,9 @@ class MainActivity : AppCompatActivity() {
         val target = st?.get("targetSec") as? Double ?: (tp.targetMinutes * 60.0)
         val deviating = st?.get("deviating") as? Boolean ?: false
         val result = st?.get("result") as? String ?: ""
+        // 用户按过「稍后」时，卡片要如实显示"我不吵你了"——否则他会以为提醒坏了
+        val snoozeTill = PlanStore.snoozeUntil(this, p.id)
+        val snoozed = snoozeTill > now
 
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -220,6 +359,10 @@ class MainActivity : AppCompatActivity() {
         val missedMin = if (state == "RUNNING" && eff < 5)
             ((now - tp.startEpoch(day)) / 60).toInt() else 0
         when {
+            snoozed -> {
+                chip.text = "已静音"
+                chip.setTextColor(SUB); chip.setBackgroundColor(0xFFF1F0EC.toInt())
+            }
             state == "RUNNING" && missedMin > 0 -> {
                 chip.text = "已到点·错过 ${missedMin} 分"
                 chip.setTextColor(0xFF8A5A00.toInt())
@@ -303,48 +446,197 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { showPlanDialog(p) }
         }
         foot.addView(btnEdit)
-        val btnDel = Button(this).apply {
-            text = "删除"; textSize = 10f
-            setTextColor(DANGER); setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener {
-                PlanStore.deletePlan(this@MainActivity, p.id)
-                MonitorService.engines.remove(p.id)
-                refresh()
-            }
-        }
-        foot.addView(btnDel)
+        // 删除不放在这里了：它跟「提前结束」只隔几个像素，误触代价却完全不同。
+        // 现在删除藏在编辑弹窗里（要多点一次、还要再确认一次），卡片上不再有破坏性按钮。
         card.addView(foot)
         return card
     }
 
+    /**
+     * 当日复盘（v0.9 改成"折叠"）。
+     *
+     * 折叠不是藏起来，是**先给结论再给明细**：一行摘要（有效多少分钟、切走多少分钟）放在标题旁边，
+     * 想看逐条再展开。以前一进首页就是一段 11sp 的小字，既不好读，也把上面的重点挤掉了。
+     *
+     * 内容只放**已结算的记录**。待开始的计划在卡片和顶部那句话里已经有了，
+     * 在"复盘"里再列一遍会让人误以为那些也算今天的成绩。
+     */
     private fun renderReview(plans: List<Plan>) {
-        val today = LocalDate.now().toString()
+        val recs = PlanStore.loadLedger(this, LocalDate.now().toString())
         val lines = mutableListOf<String>()
-        for (rec in PlanStore.loadLedger(this, today)) {
+        for (rec in recs) {
             val name = rec["name"] ?: "?"
             val result = rec["result"] ?: "?"
             val eff = (rec["effectiveMin"] as? Double)?.toInt() ?: 0
             val target = (rec["target"] as? Double)?.toInt() ?: 0
             val devMin = (rec["deviationMin"] as? Double)?.toInt() ?: 0
             val devCnt = (rec["deviationCount"] as? Double)?.toInt() ?: 0
+            val gaps = (rec["gaps"] as? Double)?.toInt() ?: 0
             val reason = rec["reason"]?.toString()?.takeIf { it.isNotBlank() }?.let { "（$it）" } ?: ""
-            lines.add("✓ $name：$result$reason｜有效 $eff/$target 分｜切走 $devMin 分 × $devCnt 次")
+            val gapText = if (gaps > 0) "｜未观测 $gaps 段" else ""
+            lines.add("$result　$name$reason\n有效 $eff/$target 分　切走 $devMin 分 × $devCnt 次$gapText")
         }
-        val now = System.currentTimeMillis() / 1000
-        for (p in plans) {
-            val eng = MonitorService.engines[p.id]
-            if (eng == null || eng.session.state == SState.WAITING) {
-                lines.add("· ${p.name}（${p.slotOf(LocalDate.now()).start} 开始）")
+
+        val effSum = recs.sumOf { (it["effectiveMin"] as? Double) ?: 0.0 }.toInt()
+        val devSum = recs.sumOf { (it["deviationMin"] as? Double) ?: 0.0 }.toInt()
+        reviewSummary.text = when {
+            recs.isEmpty() -> "今天还没有结算记录"
+            devSum > 0 -> "有效 $effSum 分钟 · 切走 $devSum 分钟"
+            else -> "有效 $effSum 分钟 · 没有切走"
+        }
+        reviewView.text = if (lines.isEmpty()) "今天还没有结算记录。\n计划结算后会出现在这里。" else lines.joinToString("\n\n")
+        applyReviewVisibility()
+    }
+
+    private fun applyReviewVisibility() {
+        reviewView.visibility = if (reviewExpanded) View.VISIBLE else View.GONE
+        reviewToggle.text = if (reviewExpanded) "收起" else "展开"
+    }
+
+    // ---------- 全部计划（含今天不做 / 已暂停的）----------
+
+    private fun dayOn(p: Plan, d: Int) = p.slots?.get(d)?.on ?: true
+    private fun dayStart(p: Plan, d: Int) = p.slots?.get(d)?.start ?: p.start
+    private fun dayMin(p: Plan, d: Int) = p.slots?.get(d)?.minutes ?: p.targetMinutes
+
+    /** 一句话排期摘要："周一三五 20:00 · 30 分钟 · 单周"，用于列表与对话。 */
+    private fun scheduleText(p: Plan): String {
+        val days = (1..7).filter { dayOn(p, it) }
+        val dayText = when {
+            days.isEmpty() -> "没有选任何一天"
+            days.size == 7 -> "每天"
+            days == listOf(1, 2, 3, 4, 5) -> "工作日"
+            days == listOf(6, 7) -> "周末"
+            else -> "周" + days.joinToString("") { DAY_LABELS[it - 1] }
+        }
+        val starts = days.map { dayStart(p, it) }.distinct()
+        val mins = days.map { dayMin(p, it) }.distinct()
+        val timeText = if (starts.size == 1) starts[0] else "时间按天不同"
+        val minText = if (mins.size == 1) "${mins[0]} 分钟" else "时长按天不同"
+        val weekText = when (p.weekMode) {
+            "odd" -> " · 单周"
+            "even" -> " · 双周"
+            else -> ""
+        }
+        return "$dayText $timeText · $minText$weekText"
+    }
+
+    /**
+     * 全部计划（v0.9）。
+     *
+     * 首页只显示今天生效的计划，所以必须有这个入口：否则**暂停一个计划 = 它从世界上消失**，
+     * 用户再也找不到它，也删不掉。这里同时补上了 `Plan.enabled` 的开关——
+     * 这个字段一直存在、服务也认，但以前没有任何界面能改它，只能"删了重建"。
+     */
+    private fun showAllPlans() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(6), dp(14), dp(2))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("全部计划")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNegativeButton("关闭", null)
+            .create()
+
+        fun rebuild() {
+            box.removeAllViews()
+            val plans = PlanStore.loadPlans(this)
+            if (plans.isEmpty()) {
+                box.addView(TextView(this).apply {
+                    text = "还没有计划。"
+                    setTextColor(SUB); textSize = 12f
+                    setPadding(dp(4), dp(18), dp(4), dp(18))
+                })
+                return
+            }
+            for (p in plans) {
+                box.addView(allPlanRow(p) {
+                    rebuild()
+                    refresh()
+                })
             }
         }
-        if (lines.isEmpty()) lines.add("今天还没有结算记录。计划完成后会出现在这里。")
-        reviewView.text = lines.joinToString("\n")
+        rebuild()
+        dialog.show()
+        frost(dialog)
+        allPlanDialog = dialog
+        dialog.setOnDismissListener { allPlanDialog = null }
     }
+
+    private fun allPlanRow(p: Plan, onChange: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(dp(13), dp(11), dp(9), dp(11))
+            setBackgroundResource(R.drawable.bg_card)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dp(8) }
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            text = p.name
+            textSize = 13f
+            setTextColor(if (p.enabled) INK else SUB)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        })
+        col.addView(TextView(this).apply {
+            text = scheduleText(p)
+            textSize = 10f
+            setTextColor(if (p.enabled) SUB else IDLE)
+            setPadding(0, dp(3), 0, 0)
+        })
+        // 点名字进编辑：改名、改时间、改排期都在这儿
+        col.setOnClickListener {
+            dismissTopDialog()
+            showPlanDialog(p)
+        }
+        row.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        val sw = Switch(this).apply {
+            isChecked = p.enabled
+            setOnCheckedChangeListener { _, checked ->
+                if (checked != p.enabled) {
+                    PlanStore.updatePlan(this@MainActivity, p.copy(enabled = checked))
+                    // 先摘掉旧引擎，再让服务按新状态重建——否则暂停后它还会继续跑完今天这一场
+                    MonitorService.engines.remove(p.id)
+                    MonitorService.start(this@MainActivity)
+                    onChange()
+                }
+            }
+        }
+        row.addView(sw)
+        return row
+    }
+
+    /** 关掉当前最上层的对话框（从列表进编辑时用，避免对话框叠两层） */
+    private fun dismissTopDialog() {
+        // 没有可靠的"取当前对话框"，用一个显式引用更稳
+        allPlanDialog?.dismiss()
+        allPlanDialog = null
+    }
+
 
     // ---------- 对话框 ----------
 
-    private fun showEarlyEndDialog(p: Plan) {
+    /** 删除确认：说明代价（历史账本保留），避免"点错了全没了"的恐慌。 */
+    private fun confirmDelete(p: Plan, onDone: () -> Unit) {
         AlertDialog.Builder(this)
+            .setTitle("删除「${p.name}」？")
+            .setMessage("计划会从列表里消失。已经记下的历史账本不动——那些是发生过的事，不该被删掉。")
+            .setPositiveButton("删除") { _, _ ->
+                PlanStore.deletePlan(this, p.id)
+                MonitorService.engines.remove(p.id)
+                onDone()
+                refresh()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showEarlyEndDialog(p: Plan) {        AlertDialog.Builder(this)
             .setTitle("提前结束「${p.name}」？")
             .setItems(REASONS) { _, which ->
                 val eng = MonitorService.engines[p.id] ?: return@setItems
@@ -614,9 +906,18 @@ class MainActivity : AppCompatActivity() {
             .setView(view)
             .setPositiveButton("保存", null)
             .setNegativeButton("取消", null)
+            .apply { if (existing != null) setNeutralButton("删除", null) }
             .show()
             .also { dialog ->
                 frost(dialog)
+                // 删除：只出现在编辑态，且要再确认一次。
+                // 破坏性操作不该和"保存/取消"平铺在同一个层级，更不该直接躺在首页卡片上。
+                if (existing != null) {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(DANGER)
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                        confirmDelete(existing) { dialog.dismiss() }
+                    }
+                }
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                     val name = editName.text.toString().trim().ifBlank {
                         editName.hint?.toString()?.trim().orEmpty()
@@ -1025,17 +1326,10 @@ class MainActivity : AppCompatActivity() {
     private fun handleSettleActs(eng: Engine, acts: List<Act>) {
         for (a in acts) {
             if (a is Act.Settle) {
-                PlanStore.appendLedger(this, LocalDate.now().toString(), mapOf(
-                    "planId" to eng.plan.id,
-                    "name" to eng.plan.name,
-                    "result" to a.result,
-                    "effectiveMin" to a.effectiveMin,
-                    "deviationMin" to a.deviationMin,
-                    "deviationCount" to a.deviationCount,
-                    "unfinishedMin" to a.unfinishedMin,
-                    "reason" to a.reason,
-                    "target" to eng.plan.targetMinutes,
-                ))
+                // 落账统一走 Ledger（v0.9）：三处各写一份字段映射，迟早有处少一个字段
+                Ledger.record(this, eng, a)
+                PlanStore.clearSnooze(this, eng.plan.id)
+                MonitorService.persist(this)
                 Notify.nagCancel(this)
             }
         }

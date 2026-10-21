@@ -71,9 +71,18 @@ object Notify {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    /** 有声提醒：闹钟级别（CATEGORY_ALARM + 全屏 Intent），防国产 ROM 折叠。 */
-    fun remind(ctx: Context, planId: Int, title: String, text: String) {
-        val n = NotificationCompat.Builder(ctx, CH_REMIND)
+    /** 有声提醒：闹钟级别（CATEGORY_ALARM + 全屏 Intent），防国产 ROM 折叠。
+     *
+     *  v0.9 起给计划相关的提醒挂两个出口：「稍后 15 分钟」「今天不做了」。
+     *  没有出口的追击，最后会被用户用"关掉通知权限"这个更彻底的方式解决掉。 */
+    fun remind(
+        ctx: Context,
+        nid: Int,
+        title: String,
+        text: String,
+        planKey: String? = null,
+    ) {
+        val b = NotificationCompat.Builder(ctx, CH_REMIND)
             .setSmallIcon(R.drawable.ic_notify)
             .setLargeIcon(largeIcon(ctx))
             .setContentTitle(title)
@@ -87,9 +96,33 @@ object Notify {
             .setVibrate(longArrayOf(0, 400, 200, 400))
             .setFullScreenIntent(contentIntent(ctx), true)
             .setContentIntent(contentIntent(ctx))
-            .build()
-        manager(ctx).notify(planId, n)
+
+        if (planKey != null) {
+            b.addAction(0, "稍后 15 分钟", action(ctx, planKey, ActionReceiver.ACTION_SNOOZE, 0))
+            b.addAction(0, "今天不做了", action(ctx, planKey, ActionReceiver.ACTION_GIVE_UP, 1))
+        }
+        manager(ctx).notify(nid, b.build())
     }
+
+    private fun action(ctx: Context, planKey: String, action: String, slot: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            ctx,
+            planKey.hashCode() * 31 + slot,
+            Intent(ctx, ActionReceiver::class.java).apply {
+                this.action = action
+                putExtra(ActionReceiver.EXTRA_PLAN, planKey)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** 收掉某个计划的全部有声提醒（"到点了" / 已错过 / 熔断问话 / 完成）。 */
+    fun cancelRemind(ctx: Context, planKey: String) {
+        val m = manager(ctx)
+        m.cancel(planKey.hashCode())
+        m.cancel(planKey.hashCode() + 3)
+        m.cancel(planKey.hashCode() + 7)
+    }
+
 
     /** 常驻催促通知：进度条 + 状态文案，随引擎每跳更新，只更新不响。 */
     fun nagUpdate(

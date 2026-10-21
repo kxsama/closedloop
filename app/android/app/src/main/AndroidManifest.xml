@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 电池优化白名单（v0.9 体检页直接弹系统授权框；不加这条只能跳列表页，多绕两层） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 闹钟级全屏提醒（Android 14+ 需声明；用户可在设置里关掉，属正常权限） -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -36,6 +38,29 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".DiagnoseActivity"
+            android:exported="false"
+            android:label="开始之前" />
+
+        <!-- 提醒上的两个动作（稍后 15 分钟 / 今天不做了）。不导出：只由本应用的通知触发。 -->
+        <receiver
+            android:name=".ActionReceiver"
+            android:exported="false" />
+
+        <!-- 开机自启（v0.9）：没有它，重启后前台服务不会自己起来，应用正常但完全不监测。
+             BOOT_COMPLETED 必须 exported 才能收到系统广播。 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".MonitorService"

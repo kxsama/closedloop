@@ -11,6 +11,7 @@ object PlanStore {
     private const val KEY_PLANS = "plans"
     private const val KEY_LEDGER_PREFIX = "ledger_"
     private const val KEY_SESSIONS = "sessions"
+    private const val KEY_SNOOZE_PREFIX = "snooze_"
     private val gson = Gson()
 
     private fun pref(ctx: Context): SharedPreferences =
@@ -93,6 +94,23 @@ object PlanStore {
 
     fun deletePlan(ctx: Context, planId: String) {
         savePlans(ctx, loadPlans(ctx).filter { it.id != planId })
+        clearSnooze(ctx, planId)
+    }
+
+    // ===== 静音（v0.9）=====
+    // 单独存，不放进 Plan：这是"此刻的状态"，不是计划配置。
+    // 混进配置里会在编辑计划时被顺带写回去，还会跟着计划一起导出/迁移，语义就脏了。
+
+    /** 静音到这个时刻（秒）。0 表示没有静音。 */
+    fun snoozeUntil(ctx: Context, planId: String): Long =
+        pref(ctx).getLong(KEY_SNOOZE_PREFIX + planId, 0L)
+
+    fun setSnooze(ctx: Context, planId: String, untilSec: Long) {
+        pref(ctx).edit().putLong(KEY_SNOOZE_PREFIX + planId, untilSec).apply()
+    }
+
+    fun clearSnooze(ctx: Context, planId: String) {
+        pref(ctx).edit().remove(KEY_SNOOZE_PREFIX + planId).apply()
     }
 
     /** 账本：按日期存结算记录列表。 */
