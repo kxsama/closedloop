@@ -169,6 +169,12 @@ class Engine(
         val acts = mutableListOf<Act>()
         if (s.state == SState.SETTLED) return acts
 
+        // Expire before WAITING can issue its first reminder. Opening the app late
+        // must not replay an afternoon alarm hundreds of minutes after its time.
+        if (s.effectiveSec < 5 && now - plan.startEpoch(today) >= MISS_SETTLE_SEC) {
+            return settle(RESULT_UNFINISHED, "未开始")
+        }
+
         val last = s.lastTick
         if (last != null && now - last > GAP_SEC) {
             s.notObserved.add(last to now)
@@ -193,18 +199,6 @@ class Engine(
                     acts.add(Act.Remind)
                 }
             }
-            return acts
-        }
-
-        // 错过收敛（v0.8）：开始后 3 小时仍未开始 → 自动结算为"未完成"，并停止追击。
-        // 没有这条时，"设了没做"会被每 2 分钟追一次、一直追到半夜，"late" 无上限；
-        // 同时日终不归档会让这条计划凭空消失，账本里什么都不留。现在它会被如实记一笔。
-        // 注意必须覆盖 COOLDOWN：一直没开始会先被判"切走"、10 分钟后进沉默冷却，
-        // 只判 RUNNING 会让这类计划永远停在冷却里（PC 测试用例 10 抓出）。
-        if ((s.state == SState.RUNNING || s.state == SState.COOLDOWN) && s.effectiveSec < 5 &&
-            now - plan.startEpoch(today) >= MISS_SETTLE_SEC
-        ) {
-            acts.addAll(settle(RESULT_UNFINISHED, "未开始"))
             return acts
         }
 

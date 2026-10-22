@@ -166,6 +166,12 @@ object Notify {
         lastNag = null
     }
 
+    @Synchronized
+    fun cancelAll(ctx: Context) {
+        manager(ctx).cancelAll()
+        lastNag = null
+    }
+
     /** 下载进度通知（v0.7）：切后台也看得见"还在下载"——修复"进度框没了、
      *  实际还在下、用户又点一遍"的问题。total<=0 时显示不确定进度。 */
     fun dlUpdate(ctx: Context, title: String, text: String, done: Long, total: Long) {

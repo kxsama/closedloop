@@ -1,119 +1,80 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 新建/编辑计划。v0.8：加排期区（7 天勾选 + 单双周 + 按天微调），内容变长所以套了 ScrollView -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="20dp">
-
-        <EditText
-            android:id="@+id/editName"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@android:color/transparent"
-            android:hint="计划名称（留空则用应用名）"
-            android:inputType="text"
-            android:padding="10dp"
-            android:textColorHint="#B4B2A9"
-            android:textSize="15sp" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#ECE9E2" />
-
-        <Button
-            android:id="@+id/btnApps"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_btn_outline"
-            android:text="选择关联应用"
-            android:textColor="#1F1E1B" />
-
-        <!-- ===== 排期 ===== -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="哪几天做（可多选）"
-            android:textColor="#6B6A66"
-            android:textSize="11sp" />
-
-        <LinearLayout
-            android:id="@+id/dayRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal" />
-
-        <LinearLayout
-            android:id="@+id/weekRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:orientation="horizontal" />
-
-        <TextView
-            android:id="@+id/weekHint"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:textColor="#B4B2A9"
-            android:textSize="10sp" />
-
-        <!-- ===== 默认时间 / 时长（勾选的那些天用这套） ===== -->
-        <Button
-            android:id="@+id/btnTime"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/bg_btn_outline"
-            android:text="默认开始时间"
-            android:textColor="#1F1E1B" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="默认时长"
-            android:textColor="#6B6A66"
-            android:textSize="11sp" />
-
-        <NumberPicker
-            android:id="@+id/pickerDur"
-            android:layout_width="match_parent"
-            android:layout_height="120dp" />
-
-        <!-- 常驻占位（invisible 而非 gone）：滑到「自定义」时布局不跳动 -->
-        <EditText
-            android:id="@+id/editCustom"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="自定义分钟数（1-999）"
-            android:inputType="number"
-            android:textColorHint="#B4B2A9"
-            android:visibility="invisible" />
-
-        <Button
-            android:id="@+id/btnPerDay"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_btn_outline"
-            android:text="按天微调（可选）"
-            android:textColor="#1F1E1B" />
-
-        <TextView
-            android:id="@+id/perDayHint"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:textColor="#B4B2A9"
-            android:textSize="10sp" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/editorRoot"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="#FFFFFF">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="64dp"
+        android:paddingStart="22dp" android:paddingEnd="12dp" android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:id="@+id/editorTitle" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="新建计划" android:textColor="#172D24" android:textStyle="bold" android:textSize="22sp" />
+        <TextView android:id="@+id/btnCancelPlan" android:layout_width="64dp" android:layout_height="48dp"
+            android:gravity="center" android:text="取消" android:textSize="14sp" android:textColor="#65766C" />
     </LinearLayout>
-</ScrollView>
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fillViewport="true">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:padding="22dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="定好一件事，到点提醒你。" android:textColor="#65766C" android:textSize="14sp" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="24dp"
+                android:text="做什么" android:textColor="#172D24" android:textSize="14sp" android:textStyle="bold" />
+            <EditText android:id="@+id/editName" android:layout_width="match_parent" android:layout_height="56dp"
+                android:layout_marginTop="10dp" android:background="@drawable/bg_field" android:padding="14dp"
+                android:hint="例如：阅读、学英语" android:textColorHint="#91A097" android:textColor="#172D24"
+                android:inputType="textCapSentences" android:maxLines="1" android:textSize="16sp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:text="名称可留空，自动使用关联应用名称" android:textColor="#65766C" android:textSize="12sp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:orientation="horizontal">
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginEnd="6dp">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="开始时间" android:textSize="14sp" android:textStyle="bold" android:textColor="#172D24" />
+                    <TextView android:id="@+id/btnTime" android:layout_width="match_parent" android:layout_height="64dp" android:layout_marginTop="10dp"
+                        android:background="@drawable/bg_field" android:gravity="center_vertical" android:paddingStart="16dp"
+                        android:textColor="#172D24" android:textSize="25sp" android:contentDescription="选择开始时间" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="6dp">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="做多久" android:textSize="14sp" android:textStyle="bold" android:textColor="#172D24" />
+                    <TextView android:id="@+id/btnDuration" android:layout_width="match_parent" android:layout_height="64dp" android:layout_marginTop="10dp"
+                        android:background="@drawable/bg_field" android:gravity="center_vertical" android:paddingStart="16dp"
+                        android:textColor="#172D24" android:textSize="22sp" android:contentDescription="输入计划分钟数" />
+                </LinearLayout>
+            </LinearLayout>
+            <LinearLayout android:id="@+id/durationPresets" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:orientation="horizontal" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="24dp"
+                android:text="关联应用" android:textColor="#172D24" android:textSize="14sp" android:textStyle="bold" />
+            <TextView android:id="@+id/btnApps" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="56dp"
+                android:layout_marginTop="10dp" android:padding="16dp" android:background="@drawable/bg_field"
+                android:gravity="center_vertical" android:text="选择应用　›" android:textColor="#207B5E" android:textSize="14sp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+                android:text="待在这些应用里的时间，才计入计划" android:textColor="#65766C" android:textSize="12sp" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="26dp" android:background="#E2EAE5" />
+            <LinearLayout android:id="@+id/repeatToggle" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:minHeight="70dp" android:orientation="horizontal" android:gravity="center_vertical">
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="重复与按天安排"
+                        android:textColor="#172D24" android:textSize="14sp" android:textStyle="bold" />
+                    <TextView android:id="@+id/repeatSummary" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp" android:textColor="#65766C" android:textSize="12sp" />
+                </LinearLayout>
+                <TextView android:id="@+id/repeatArrow" android:layout_width="48dp" android:layout_height="48dp"
+                    android:gravity="center" android:text="展开" android:textColor="#207B5E" android:textSize="12sp" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/repeatOptions" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:visibility="gone">
+                <LinearLayout android:id="@+id/dayRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" />
+                <LinearLayout android:id="@+id/weekRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp" />
+                <TextView android:id="@+id/weekHint" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" android:textColor="#65766C" android:textSize="12sp" />
+                <TextView android:id="@+id/btnPerDay" android:layout_width="match_parent" android:layout_height="48dp"
+                    android:gravity="center_vertical" android:text="每天不同时间　›" android:textColor="#207B5E" android:textSize="14sp" />
+                <TextView android:id="@+id/perDayHint" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textColor="#65766C" android:textSize="12sp" android:layout_marginBottom="12dp" />
+            </LinearLayout>
+            <TextView android:id="@+id/btnDeletePlan" android:layout_width="wrap_content" android:layout_height="48dp"
+                android:layout_marginTop="18dp" android:text="删除这个计划" android:gravity="center_vertical"
+                android:textColor="#B1493E" android:textSize="13sp" android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="18dp" android:orientation="vertical">
+        <Button android:id="@+id/btnSavePlan" android:layout_width="match_parent" android:layout_height="52dp"
+            android:background="@drawable/bg_primary" android:backgroundTint="@null" android:text="创建计划"
+            android:textColor="#FFFFFF" android:textSize="15sp" android:textAllCaps="false" />
+    </LinearLayout>
+</LinearLayout>

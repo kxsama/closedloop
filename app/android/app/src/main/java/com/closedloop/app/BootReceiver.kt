@@ -18,6 +18,7 @@ import android.content.Intent
 class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(ctx: Context, intent: Intent) {
+        if (!PlanStore.monitoringEnabled(ctx)) return
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,

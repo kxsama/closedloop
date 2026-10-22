@@ -12,16 +12,34 @@ object PlanStore {
     private const val KEY_LEDGER_PREFIX = "ledger_"
     private const val KEY_SESSIONS = "sessions"
     private const val KEY_SNOOZE_PREFIX = "snooze_"
+    private const val KEY_MONITORING = "monitoring_enabled"
+    private const val KEY_AUTOSTART_CONFIRMED = "autostart_confirmed"
     private val gson = Gson()
 
     private fun pref(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
     /** 会话持久化：App 重启后恢复进行中/已结算的状态，不再"重置为计时中"。 */
-    fun saveSessions(ctx: Context, sessions: Map<String, Session>) {
+    fun saveSessions(ctx: Context, sessions: Map<String, Session>, synchronous: Boolean = false) {
         val sp = pref(ctx)
         val json = gson.toJson(sessions)
-        if (sp.getString(KEY_SESSIONS, null) != json) sp.edit().putString(KEY_SESSIONS, json).apply()
+        if (sp.getString(KEY_SESSIONS, null) != json) {
+            val edit = sp.edit().putString(KEY_SESSIONS, json)
+            if (synchronous) edit.commit() else edit.apply()
+        }
+    }
+
+    fun monitoringEnabled(ctx: Context): Boolean = pref(ctx).getBoolean(KEY_MONITORING, true)
+
+    /** Synchronous because explicit exit may immediately end the process. */
+    fun setMonitoringEnabled(ctx: Context, enabled: Boolean) {
+        check(pref(ctx).edit().putBoolean(KEY_MONITORING, enabled).commit())
+    }
+
+    fun autostartConfirmed(ctx: Context): Boolean = pref(ctx).getBoolean(KEY_AUTOSTART_CONFIRMED, false)
+
+    fun confirmAutostart(ctx: Context, confirmed: Boolean) {
+        pref(ctx).edit().putBoolean(KEY_AUTOSTART_CONFIRMED, confirmed).apply()
     }
 
     fun loadSessions(ctx: Context): Map<String, Session> {

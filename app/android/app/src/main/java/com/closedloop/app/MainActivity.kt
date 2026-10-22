@@ -36,6 +36,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.io.File
@@ -47,12 +48,12 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val GREEN = 0xFF22A06B.toInt()
+        private const val GREEN = 0xFF207B5E.toInt()
         private const val GREEN_DARK = 0xFF177A50.toInt()
         private const val WARN = 0xFFE8A13A.toInt()
         private const val DANGER = 0xFFD64545.toInt()
-        private const val INK = 0xFF1F1E1B.toInt()
-        private const val SUB = 0xFF6B6A66.toInt()
+        private const val INK = 0xFF172D24.toInt()
+        private const val SUB = 0xFF65766C.toInt()
         private const val IDLE = 0xFFC9C7C0.toInt()
         private val DURATIONS = listOf(5, 10, 15, 20, 30, 45, 60, 90)
         private val REASONS = arrayOf("背完了", "今天状态不行", "计划定得不合理", "有突发")
@@ -72,6 +73,7 @@ class MainActivity : AppCompatActivity() {
 
     /** 复盘默认收起：一进来就摊开一堆小字，等于把最重要的信息埋掉 */
     private var reviewExpanded = false
+    private var showSettled = false
 
     /** "全部计划"弹窗的引用：从列表点进编辑时要先关掉它，不然会叠两层对话框 */
     private var allPlanDialog: AlertDialog? = null
@@ -89,6 +91,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         // targetSdk 35 在 Android 15+ 强制边到边，内容会被状态栏遮住——按系统栏加内边距
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { v, insets ->
@@ -105,7 +108,14 @@ class MainActivity : AppCompatActivity() {
         reviewSummary = findViewById(R.id.reviewSummary)
         reviewToggle = findViewById(R.id.reviewToggle)
         allPlansView = findViewById(R.id.allPlans)
-        findViewById<Button>(R.id.btnNew).setOnClickListener { showPlanDialog() }
+        findViewById<Button>(R.id.btnNew).apply {
+            backgroundTintList = null
+            setOnClickListener { showPlanDialog() }
+        }
+        findViewById<TextView>(R.id.btnHealth).setOnClickListener {
+            startActivity(Intent(this, DiagnoseActivity::class.java))
+        }
+        findViewById<TextView>(R.id.btnStop).setOnClickListener { stopAndExit() }
         findViewById<TextView>(R.id.btnUpdate).apply {
             setOnClickListener { checkUpdate() }
             text = updateBtnLabel()
@@ -144,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         consumeFinishedDownload()
         // 以前这里每次 onResume 都弹一次"需要一个关键权限"，只查 1 项、且拦路。
         // 现在改成首页顶部的信息条（见 refreshBanner），全部正常就完全不出现。
-        if (MonitorService.hasUsageAccess(this)) MonitorService.start(this)
+        if (PlanStore.monitoringEnabled(this) && MonitorService.hasUsageAccess(this)) MonitorService.start(this)
         handler.post(refresher)
     }
 
@@ -164,7 +174,22 @@ class MainActivity : AppCompatActivity() {
 
         plansContainer.removeAllViews()
         if (shown.isEmpty()) plansContainer.addView(emptyState(plans))
-        for (p in shown) plansContainer.addView(planRow(p, now))
+        val ended = shown.filter { MonitorService.engines[it.id]?.session?.state == SState.SETTLED }
+        val open = shown.filterNot { it in ended }.sortedWith(compareBy<Plan> {
+            if (MonitorService.engines[it.id]?.session?.state in listOf(SState.RUNNING, SState.COOLDOWN)) 0 else 1
+        }.thenBy { it.forDay(today).start })
+        for (p in open) plansContainer.addView(planRow(p, now))
+        if (ended.isNotEmpty()) {
+            plansContainer.addView(TextView(this).apply {
+                text = "已结束 ${ended.size} 项　${if (showSettled) "收起 ↑" else "查看 ↓"}"
+                textSize = 13f
+                setTextColor(SUB)
+                minHeight = dp(48)
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setOnClickListener { showSettled = !showSettled; refresh() }
+            })
+            if (showSettled) for (p in ended) plansContainer.addView(planRow(p, now))
+        }
 
         renderHeadline(shown, plans, today, now)
         refreshBanner()
@@ -194,6 +219,11 @@ class MainActivity : AppCompatActivity() {
      * 两个原则：① 只陈述事实，不评判；② 正在做的时候必须给"还差多少"，那是唯一有用的数字。
      */
     private fun renderHeadline(shown: List<Plan>, all: List<Plan>, day: LocalDate, now: Long) {
+        if (!PlanStore.monitoringEnabled(this)) {
+            headlineView.text = "监测已停止"
+            sublineView.text = "不会检测、提醒或自动启动。计划与记录都保留，点下方提示可恢复。"
+            return
+        }
         if (shown.isEmpty()) {
             headlineView.text = if (all.isEmpty()) "还没有计划" else "今天没有安排"
             sublineView.text = if (all.isEmpty())
@@ -216,7 +246,7 @@ class MainActivity : AppCompatActivity() {
         val settled = shown.filter { st(it) == SState.SETTLED }
         val deviating = running.firstOrNull { sess.getValue(it).devConfirmed }
         val notStarted = running.firstOrNull {
-            sess.getValue(it).effectiveSec < 5 && now >= it.startEpoch(day)
+            sess.getValue(it).effectiveSec < 5 && now >= target.getValue(it).startEpoch(day)
         }
 
         // 进行中时，后面还剩几件——一句话交代清楚，不用往下翻
@@ -232,10 +262,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             notStarted != null -> {
-                val late = ((now - notStarted.startEpoch(day)) / 60).toInt()
-                headlineView.text = "「${notStarted.name}」到点了，还没开始"
-                sublineView.text =
-                    "已经过了 $late 分钟。现在进去也算数——从你真正进去那一刻起算。"
+                headlineView.text = "到了「${notStarted.name}」的时间"
+                sublineView.text = "原定 ${target.getValue(notStarted).start} 开始。进入关联应用后，才开始记录时间。"
             }
 
             running.isNotEmpty() -> {
@@ -249,31 +277,36 @@ class MainActivity : AppCompatActivity() {
             }
 
             nextWait != null -> {
-                headlineView.text = if (settled.isEmpty()) "今天 ${shown.size} 件事"
-                else "今天 ${shown.size} 件事，已结算 ${settled.size} 件"
+                headlineView.text = "下一件，${nextWait.name}"
                 sublineView.text =
-                    "下一件 ${target.getValue(nextWait).start}「${nextWait.name}」，${tgt(nextWait)} 分钟。" +
-                        if (waiting.size > 1) "（还有 ${waiting.size - 1} 件在后面）" else ""
+                    "${target.getValue(nextWait).start} 开始 · ${tgt(nextWait)} 分钟。" +
+                        if (waiting.size > 1) "之后还有 ${waiting.size - 1} 项。" else "到点会提醒你。"
             }
 
             else -> {
                 val totalMin = shown.sumOf { effMin(it) }
-                headlineView.text = "今天 ${shown.size} 件事，都结算了"
-                sublineView.text = "有效投入共 $totalMin 分钟。没有别的要做了。"
+                headlineView.text = "今天的安排已结束"
+                sublineView.text = "记录了 $totalMin 分钟。已结束的安排和记录都可以在下方查看。"
             }
         }
     }
 
     /** 待处理提示条：只在真的有东西要处理时出现，且只说数量，不报警。 */
     private fun refreshBanner() {
+        if (!PlanStore.monitoringEnabled(this)) {
+            bannerView.visibility = View.VISIBLE
+            bannerView.text = "监测已停止　·　点此恢复 ›"
+            bannerView.setOnClickListener { MonitorService.resume(this); refresh() }
+            return
+        }
+        bannerView.setOnClickListener { startActivity(Intent(this, DiagnoseActivity::class.java)) }
         val pending = Health.pending(this)
         if (pending.isEmpty()) {
             bannerView.visibility = View.GONE
             return
         }
         bannerView.visibility = View.VISIBLE
-        bannerView.text = "还有 ${pending.size} 项设置没打开，" +
-            "可能会让提醒到不了你这儿。点这里看看 ›"
+        bannerView.text = "有 ${pending.size} 项运行检查需要处理　›"
     }
 
     /** 全部计划的入口：今天没有的计划（含已暂停的）都得有个地方找回来，否则"暂停"等于"消失"。 */
@@ -312,143 +345,98 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun planRow(p: Plan, now: Long): View {
-        // 按天排期后，卡片显示的是"今天这一档"的时间和时长（v0.8）
         val day = LocalDate.now()
-        val tp = p.forDay(day)
-        val eng = MonitorService.engines[p.id]
-        val st = eng?.status(now)
-        val state = st?.get("state") as? String ?: "WAITING"
-        val level = (st?.get("level") as? Int) ?: 0
-        val eff = st?.get("effectiveSec") as? Double ?: 0.0
-        val target = st?.get("targetSec") as? Double ?: (tp.targetMinutes * 60.0)
-        val deviating = st?.get("deviating") as? Boolean ?: false
-        val result = st?.get("result") as? String ?: ""
-        // 用户按过「稍后」时，卡片要如实显示"我不吵你了"——否则他会以为提醒坏了
-        val snoozeTill = PlanStore.snoozeUntil(this, p.id)
-        val snoozed = snoozeTill > now
-
+        val todayPlan = p.forDay(day)
+        val session = MonitorService.engines[p.id]?.session
+        val state = session?.state ?: SState.WAITING
+        val active = state == SState.RUNNING || state == SState.COOLDOWN
+        val stopped = !PlanStore.monitoringEnabled(this)
+        val effective = session?.effectiveSec ?: 0.0
+        val target = todayPlan.targetMinutes * 60.0
+        val snoozed = PlanStore.snoozeUntil(this, p.id) > now
+        val expired = effective < 5 && now - todayPlan.startEpoch(day) >= Engine.MISS_SETTLE_SEC
+        val label = when {
+            stopped -> "监测已停"
+            state == SState.SETTLED && session?.reason == "未开始" -> "时段已过"
+            state == SState.SETTLED -> session?.result ?: "已结束"
+            expired -> "时段已过"
+            snoozed -> "已静音"
+            state == SState.COOLDOWN -> "暂不催促"
+            active && effective < 5 -> "待开始"
+            active && session?.devConfirmed == true -> "已切走"
+            active -> "进行中"
+            else -> "待开始"
+        }
+        val emphasis = active && !expired && !stopped
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(28, 20, 28, 20)
+            setPadding(dp(18), dp(16), dp(18), dp(14))
             setBackgroundResource(R.drawable.bg_card)
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            lp.bottomMargin = 14
-            layoutParams = lp
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
         }
-
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val timeTv = TextView(this).apply {
-            text = tp.start; textSize = 20f; setTextColor(INK)
+        val head = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        head.addView(TextView(this).apply {
+            text = p.name; textSize = 16f; setTextColor(INK)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        head.addView(timeTv)
-        val nameTv = TextView(this).apply {
-            text = "  ${p.name}"; textSize = 13f; setTextColor(SUB)
-            setPadding(12, 10, 0, 0)
-        }
-        head.addView(nameTv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        val chip = TextView(this).apply {
-            textSize = 10f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(18, 6, 18, 6)
-        }
-        val missedMin = if (state == "RUNNING" && eff < 5)
-            ((now - tp.startEpoch(day)) / 60).toInt() else 0
-        when {
-            snoozed -> {
-                chip.text = "已静音"
-                chip.setTextColor(SUB); chip.setBackgroundColor(0xFFF1F0EC.toInt())
-            }
-            state == "RUNNING" && missedMin > 0 -> {
-                chip.text = "已到点·错过 ${missedMin} 分"
-                chip.setTextColor(0xFF8A5A00.toInt())
-                chip.setBackgroundColor(0xFFFBF3E2.toInt())
-            }
-            state == "RUNNING" && deviating -> {
-                chip.text = "已切走"
-                chip.setTextColor(if (level >= 3) DANGER else 0xFF8A5A00.toInt())
-                chip.setBackgroundColor(if (level >= 3) 0xFFFBEAEA.toInt() else 0xFFFBF3E2.toInt())
-            }
-            state == "RUNNING" -> {
-                chip.text = "计时中"
-                chip.setTextColor(GREEN_DARK)
-                chip.setBackgroundColor(0xFFE9F5EE.toInt())
-            }
-            state == "COOLDOWN" -> {
-                chip.text = "沉默中"; chip.setTextColor(DANGER)
-                chip.setBackgroundColor(0xFFFBEAEA.toInt())
-            }
-            state == "SETTLED" -> {
-                chip.text = result.ifBlank { "已结算" }
-                chip.setTextColor(SUB); chip.setBackgroundColor(0xFFF1F0EC.toInt())
-            }
-            else -> {
-                chip.text = "待开始"; chip.setTextColor(SUB)
-                chip.setBackgroundColor(0xFFF1F0EC.toInt())
-            }
-        }
-        head.addView(chip)
+            maxLines = 2
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(10) })
+        head.addView(TextView(this).apply {
+            text = label; textSize = 11f
+            setTextColor(if (emphasis) GREEN_DARK else SUB)
+            background = rounded(if (emphasis) 0xFFEAF4EE.toInt() else 0xFFF2F5F3.toInt(), 10)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+        })
         card.addView(head)
-
-        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = target.toInt()
-            progress = eff.toInt().coerceIn(0, max)
-            val color = when {
-                state == "SETTLED" -> if (result == "完成") GREEN else IDLE
-                state == "RUNNING" && deviating -> if (level >= 3) DANGER else WARN
-                state == "COOLDOWN" -> DANGER
-                state == "RUNNING" -> GREEN
-                else -> IDLE
-            }
-            progressTintList = ColorStateList.valueOf(color)
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 14
-            )
-            lp.topMargin = 16
-            layoutParams = lp
+        val time = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        time.addView(TextView(this).apply {
+            text = todayPlan.start; textSize = 24f; setTextColor(INK)
+        })
+        time.addView(TextView(this).apply {
+            text = "${todayPlan.targetMinutes} 分钟"; textSize = 13f; setTextColor(SUB)
+            setPadding(dp(12), 0, 0, 0)
+        })
+        card.addView(time, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        if (active || effective > 0) {
+            card.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = target.toInt(); progress = effective.toInt().coerceIn(0, max)
+                progressTintList = ColorStateList.valueOf(if (session?.devConfirmed == true) WARN else GREEN)
+                progressBackgroundTintList = ColorStateList.valueOf(0xFFEDF2EE.toInt())
+            }, LinearLayout.LayoutParams(-1, dp(5)).apply { topMargin = dp(16) })
         }
-        card.addView(bar)
-
-        val ratio = TextView(this).apply {
-            text = if (state == "RUNNING" || state == "COOLDOWN")
-                "${fmt(eff)} / ${fmt(target)}"
-            else "目标 ${fmt(target)}"
-            textSize = 11f; setTextColor(INK)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 8, 0, 0)
-        }
-        card.addView(ratio)
-
-        val foot = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val detail = TextView(this).apply {
-            var t = "目标 ${tp.targetMinutes} 分钟"
-            val devMin = ((st?.get("deviationSec") as? Double) ?: 0.0).toInt() / 60
-            val devCnt = (st?.get("deviationCount") as? Int) ?: 0
-            if (devMin > 0 || devCnt > 0) t += "｜切走 ${devMin} 分 × ${devCnt} 次"
-            text = t; textSize = 10f; setTextColor(SUB)
-        }
-        foot.addView(detail, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        if (state == "RUNNING" || state == "COOLDOWN") {
-            val btnEnd = Button(this).apply {
-                text = "提前结束"; textSize = 10f
-                setTextColor(SUB); setBackgroundColor(0xFFF1F0EC.toInt())
-                setOnClickListener { showEarlyEndDialog(p) }
-            }
-            foot.addView(btnEnd)
-        }
-        val btnEdit = Button(this).apply {
-            text = "编辑"; textSize = 10f
-            setTextColor(SUB); setBackgroundColor(Color.TRANSPARENT)
+        val foot = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        foot.addView(TextView(this).apply {
+            text = if (active || effective > 0) "已记录 ${fmt(effective)} / ${fmt(target)}" else scheduleText(p)
+            textSize = 12f; setTextColor(SUB)
+            maxLines = 2
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        if (active && !expired && !stopped) foot.addView(TextView(this).apply {
+            text = "结束"; textSize = 12f; setTextColor(SUB)
+            gravity = android.view.Gravity.CENTER; minWidth = dp(48); minHeight = dp(48)
+            setOnClickListener { showEarlyEndDialog(p) }
+        })
+        foot.addView(TextView(this).apply {
+            text = "编辑"; textSize = 12f; setTextColor(GREEN_DARK)
+            gravity = android.view.Gravity.CENTER; minWidth = dp(48); minHeight = dp(48)
             setOnClickListener { showPlanDialog(p) }
-        }
-        foot.addView(btnEdit)
-        // 删除不放在这里了：它跟「提前结束」只隔几个像素，误触代价却完全不同。
-        // 现在删除藏在编辑弹窗里（要多点一次、还要再确认一次），卡片上不再有破坏性按钮。
-        card.addView(foot)
+        })
+        card.addView(foot, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         return card
+    }
+
+    private fun rounded(color: Int, radius: Int = 14) = android.graphics.drawable.GradientDrawable().apply {
+        setColor(color); cornerRadius = dp(radius).toFloat()
+    }
+
+    private fun stopAndExit() {
+        AlertDialog.Builder(this)
+            .setTitle("停止监测并退出？")
+            .setMessage("停止后不会检测、提醒，也不会随开机或更新自动启动。计划和记录会保留，下次打开可手动恢复监测。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("停止并退出") { _, _ ->
+                MonitorService.stopManually(this)
+                finishAndRemoveTask()
+                handler.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 200)
+            }.show()
     }
 
     /**
@@ -703,263 +691,168 @@ class MainActivity : AppCompatActivity() {
 
     /** 可复用的时长选择 */
     private fun pickMinutes(initial: Int, onPicked: (Int) -> Unit) {
-        val np = NumberPicker(this).apply {
-            minValue = 1
-            maxValue = 999
-            value = initial.coerceIn(1, 999)
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(initial.toString()); selectAll()
+            setTextColor(INK); textSize = 22f
+            hint = "1–999 分钟"
         }
         val wrap = LinearLayout(this).apply {
-            setPadding(dp(20), dp(16), dp(20), 0)
-            addView(np)
+            setPadding(dp(24), dp(14), dp(24), 0)
+            addView(input, LinearLayout.LayoutParams(-1, dp(56)))
         }
-        AlertDialog.Builder(this)
-            .setTitle("选择时长（分钟）")
-            .setView(wrap)
-            .setPositiveButton("确定") { _, _ -> onPicked(np.value) }
-            .setNegativeButton("取消", null)
-            .show().also { frost(it) }
+        val dialog = AlertDialog.Builder(this).setTitle("做多久")
+            .setView(wrap).setNegativeButton("取消", null).setPositiveButton("确定", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val n = input.text.toString().toIntOrNull()
+                if (n == null || n !in 1..999) input.error = "请输入 1–999 分钟"
+                else { onPicked(n); dialog.dismiss() }
+            }
+            input.requestFocus()
+            dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        }
+        dialog.show()
     }
 
-    /** 小标签：选中态绿底绿字，未选中灰底 */
+    /** Reusable selection chip; one source of truth remains ScheduleDraft.slots. */
     private fun chipView(label: String, selected: Boolean, onClick: () -> Unit): TextView =
         TextView(this).apply {
-            text = label
-            textSize = 12f
+            text = label; textSize = 12f
             gravity = android.view.Gravity.CENTER
-            setPadding(0, dp(7), 0, dp(7))
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            isClickable = true
-            if (selected) {
-                setTextColor(GREEN_DARK)
-                setBackgroundColor(0xFFE9F5EE.toInt())
-            } else {
-                setTextColor(SUB)
-                setBackgroundColor(0xFFF1F0EC.toInt())
-            }
+            minHeight = dp(48)
+            isSelected = selected
+            setTextColor(if (selected) GREEN_DARK else SUB)
+            background = rounded(if (selected) 0xFFE5F2E9.toInt() else 0xFFF3F6F4.toInt(), 12)
             setOnClickListener { onClick() }
         }
 
-    /** existing == null → 新建；否则编辑。id 不变，历史账本不断。 */
     private fun showPlanDialog(existing: Plan? = null) {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_plan, null)
+        view.isFocusableInTouchMode = true
+        view.requestFocus()
+        val editor = Dialog(this, R.style.Theme_ClosedLoop_Editor)
+        editor.setContentView(view)
+        val defaultStart = java.time.LocalTime.now().plusMinutes(2).let { "%02d:%02d".format(it.hour, it.minute) }
+        val draft = ScheduleDraft(existing, defaultStart)
         val editName = view.findViewById<EditText>(R.id.editName)
-        val btnTime = view.findViewById<Button>(R.id.btnTime)
-        val pickerDur = view.findViewById<NumberPicker>(R.id.pickerDur)
-        val editCustom = view.findViewById<EditText>(R.id.editCustom)
-        val btnApps = view.findViewById<Button>(R.id.btnApps)
+        val btnTime = view.findViewById<TextView>(R.id.btnTime)
+        val btnDuration = view.findViewById<TextView>(R.id.btnDuration)
+        val btnApps = view.findViewById<TextView>(R.id.btnApps)
         val dayRow = view.findViewById<LinearLayout>(R.id.dayRow)
         val weekRow = view.findViewById<LinearLayout>(R.id.weekRow)
-        val weekHint = view.findViewById<TextView>(R.id.weekHint)
-        val btnPerDay = view.findViewById<Button>(R.id.btnPerDay)
-        val perDayHint = view.findViewById<TextView>(R.id.perDayHint)
-
-        val today = LocalDate.now()
-
-        // 基准时间/时长：编辑时取"今天那一档"；新建时默认 2 分钟后 + 10 分钟
-        var timeStr = if (existing != null) existing.forDay(today).start else {
-            val n = java.time.LocalTime.now().plusMinutes(2)
-            "%02d:%02d".format(n.hour, n.minute)
-        }
-        val baseMinutes = existing?.forDay(today)?.targetMinutes ?: 10
-
-        // 工作副本：7 个槽位。勾选只是批量套用，不存在第二套"重复规则"
-        val slots: MutableMap<Int, DaySlot> = existing?.slots
-            ?.mapValues { (_, s) -> DaySlot(s.on, s.start, s.minutes) }
-            ?.toMutableMap()
-            ?: (1..7).associateWith { DaySlot(true, timeStr, baseMinutes) }.toMutableMap()
-
-        // 与基准不同的天 = 已微调；改"默认时间/时长"时不覆盖它们
-        val customized = mutableSetOf<Int>()
-        for (d in 1..7) {
-            val s = slots[d] ?: continue
-            if (s.start != timeStr || s.minutes != baseMinutes) customized.add(d)
-        }
-        var weekMode = existing?.weekMode ?: "all"
-
-        if (existing != null) {
-            editName.setText(existing.name)
-            editName.setSelection(editName.text.length)
-        }
+        val presets = view.findViewById<LinearLayout>(R.id.durationPresets)
+        val repeatSummary = view.findViewById<TextView>(R.id.repeatSummary)
+        val options = view.findViewById<View>(R.id.repeatOptions)
         val installed = launchableApps()
-        val chosen = linkedSetOf<String>()
-        existing?.packages?.let { chosen.addAll(it) }
+        val chosen = linkedSetOf<String>().apply { existing?.packages?.let { addAll(it) } }
+        view.findViewById<TextView>(R.id.editorTitle).text = if (existing == null) "新建计划" else "编辑计划"
+        editName.setText(existing?.name.orEmpty())
+        view.findViewById<TextView>(R.id.btnCancelPlan).setOnClickListener { editor.dismiss() }
 
-        fun appsLabel(): String {
-            val names = chosen.mapNotNull { pkg -> installed.firstOrNull { it.pkg == pkg }?.label }
-            return if (names.isEmpty()) "选择关联应用"
-            else names.take(3).joinToString("、") + if (names.size > 3) " 等${names.size}个" else ""
+        fun appNames() = chosen.map { pkg -> installed.firstOrNull { it.pkg == pkg }?.label ?: pkg }
+        fun updateSummary() {
+            repeatSummary.text = draft.summary()
+            view.findViewById<TextView>(R.id.perDayHint).text = if (draft.customized.isEmpty())
+                "未单独设置的日期使用上面的时间和时长"
+            else "已单独安排：" + draft.customized.sorted().joinToString("、") { "周${DAY_LABELS[it - 1]}" }
         }
-
-        btnApps.text = appsLabel()
-
-        val durLabels = (DURATIONS.map { "$it 分钟" } + "自定义").toTypedArray()
-        pickerDur.minValue = 0
-        pickerDur.maxValue = durLabels.size - 1
-        pickerDur.displayedValues = durLabels
-        val baseIdx = DURATIONS.indexOf(baseMinutes)
-        pickerDur.value = if (baseIdx >= 0) baseIdx else durLabels.size - 1
-        if (baseIdx < 0) {
-            editCustom.visibility = View.VISIBLE
-            editCustom.setText(baseMinutes.toString())
-        } else {
-            editCustom.visibility = View.INVISIBLE
-        }
-
-        fun currentBaseMinutes(): Int = if (pickerDur.value == durLabels.size - 1) {
-            editCustom.text.toString().toIntOrNull() ?: baseMinutes
-        } else {
-            DURATIONS[pickerDur.value]
-        }
-
-        /** 把默认时间/时长套到"没微调过"的天上 */
-        fun syncBase() {
-            val m = currentBaseMinutes()
-            for (d in 1..7) {
-                if (d in customized) continue
-                slots[d]?.start = timeStr
-                slots[d]?.minutes = m
+        fun paintTiming() {
+            btnTime.text = draft.start
+            btnDuration.text = "${draft.minutes} 分钟"
+            presets.removeAllViews()
+            for (minutes in listOf(10, 20, 30, 45, 60)) {
+                val chip = chipView("$minutes 分", draft.minutes == minutes) {
+                    draft.setBase(newMinutes = minutes); paintTiming(); updateSummary()
+                }
+                presets.addView(chip, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(5) })
             }
         }
-
-        fun updatePerDayHint() {
-            perDayHint.text = if (customized.isEmpty()) {
-                "未微调：勾选的天都用默认时间/时长"
-            } else {
-                "已单独设置：" + customized.sorted().joinToString("、") { "周" + DAY_LABELS[it - 1] }
-            }
-        }
-
         fun paintDays() {
             dayRow.removeAllViews()
             for (d in 1..7) {
-                val onNow = slots[d]?.on == true
-                val tv = chipView(DAY_LABELS[d - 1], onNow) {
-                    slots[d]?.on = !onNow
-                    paintDays()
-                    updatePerDayHint()
+                val on = draft.slots.getValue(d).on
+                val chip = chipView(DAY_LABELS[d - 1], on) {
+                    draft.slots.getValue(d).on = !on; paintDays(); updateSummary()
                 }
-                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                lp.marginEnd = dp(4)
-                tv.layoutParams = lp
-                dayRow.addView(tv)
+                chip.contentDescription = "周${DAY_LABELS[d - 1]}，${if (on) "已选择" else "未选择"}"
+                dayRow.addView(chip, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
             }
         }
-
-        fun paintWeek() {
+        fun paintWeeks() {
             weekRow.removeAllViews()
-            for ((mode, label) in listOf("all" to "每天", "odd" to "单周", "even" to "双周")) {
-                val tv = chipView(label, weekMode == mode) {
-                    weekMode = mode
-                    paintWeek()
-                }
-                val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                lp.marginEnd = dp(4)
-                tv.layoutParams = lp
-                weekRow.addView(tv)
+            for ((mode, label) in listOf("all" to "每周", "odd" to "单周", "even" to "双周")) {
+                weekRow.addView(chipView(label, draft.weekMode == mode) {
+                    draft.weekMode = mode; paintWeeks(); updateSummary()
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(5) })
             }
-            val thisWeek = if (weekIsOdd(LocalDate.now())) "单周" else "双周"
-            weekHint.text = "本周（含今天）是$thisWeek；单/双周是在勾选的基础上再筛一层"
+            view.findViewById<TextView>(R.id.weekHint).text =
+                "本周是${if (weekIsOdd(LocalDate.now())) "单周" else "双周"}"
         }
-
-        btnTime.text = "默认开始时间：$timeStr"
         btnTime.setOnClickListener {
-            pickTime(timeStr) { t ->
-                timeStr = t
-                btnTime.text = "默认开始时间：$timeStr"
-                syncBase()
+            pickTime(draft.start) { draft.setBase(newStart = it); paintTiming(); updateSummary() }
+        }
+        btnDuration.setOnClickListener {
+            pickMinutes(draft.minutes) { draft.setBase(newMinutes = it); paintTiming(); updateSummary() }
+        }
+        fun paintApps() {
+            val names = appNames()
+            btnApps.text = if (names.isEmpty()) "选择应用　›"
+            else names.take(3).joinToString("、") + if (names.size > 3) " 等 ${names.size} 个　›" else "　›"
+        }
+        btnApps.setOnClickListener { showAppPicker(installed, chosen) { paintApps() } }
+        view.findViewById<View>(R.id.repeatToggle).setOnClickListener {
+            val open = options.visibility != View.VISIBLE
+            options.visibility = if (open) View.VISIBLE else View.GONE
+            view.findViewById<TextView>(R.id.repeatArrow).text = if (open) "收起" else "展开"
+        }
+        view.findViewById<TextView>(R.id.btnPerDay).setOnClickListener {
+            val working = draft.copySlots()
+            showPerDayDialog(working, draft.customized.toMutableSet(), draft.start, draft.minutes) {
+                draft.applyDays(working); paintDays(); updateSummary()
             }
         }
-
-        pickerDur.setOnValueChangedListener { _, _, newVal ->
-            editCustom.visibility =
-                if (newVal == durLabels.size - 1) View.VISIBLE else View.INVISIBLE
-            syncBase()
+        view.findViewById<TextView>(R.id.btnDeletePlan).apply {
+            visibility = if (existing == null) View.GONE else View.VISIBLE
+            setOnClickListener { existing?.let { plan -> confirmDelete(plan) { editor.dismiss() } } }
         }
-
-        btnApps.setOnClickListener {
-            showAppPicker(installed, chosen) {
-                btnApps.text = appsLabel()
-                // 名称栏没输入过内容才更新占位提示
-                if (editName.text.isBlank() && chosen.isNotEmpty()) {
-                    installed.firstOrNull { it.pkg == chosen.first() }?.label?.let {
-                        editName.hint = it
+        view.findViewById<Button>(R.id.btnSavePlan).apply {
+            backgroundTintList = null
+            text = if (existing == null) "创建计划" else "保存修改"
+            setOnClickListener {
+                val name = editName.text.toString().trim().ifBlank { appNames().firstOrNull().orEmpty() }
+                when {
+                    chosen.isEmpty() -> Toast.makeText(this@MainActivity, "请选择至少一个关联应用", Toast.LENGTH_SHORT).show()
+                    draft.slots.values.none { it.on } -> {
+                        options.visibility = View.VISIBLE
+                        view.findViewById<TextView>(R.id.repeatArrow).text = "收起"
+                        Toast.makeText(this@MainActivity, "请至少选择一天", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        val plan = existing?.copy(name = name, start = draft.start, targetMinutes = draft.minutes,
+                            packages = chosen.toMutableList(), slots = draft.copySlots(), weekMode = draft.weekMode)
+                            ?: Plan(UUID.randomUUID().toString().take(8), name, draft.start, draft.minutes,
+                                chosen.toMutableList(), slots = draft.copySlots(), weekMode = draft.weekMode)
+                        if (existing == null) PlanStore.addPlan(this@MainActivity, plan)
+                        else PlanStore.updatePlan(this@MainActivity, plan)
+                        MonitorService.start(this@MainActivity)
+                        editor.dismiss(); refresh()
                     }
                 }
             }
         }
-
-        btnPerDay.setOnClickListener {
-            syncBase()
-            showPerDayDialog(slots, customized, timeStr, currentBaseMinutes()) {
-                paintDays()
-                updatePerDayHint()
-            }
+        paintTiming(); paintDays(); paintWeeks(); paintApps(); updateSummary()
+        editor.window?.let { win ->
+            WindowCompat.setDecorFitsSystemWindows(win, false)
+            win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
-
-        paintDays()
-        paintWeek()
-        updatePerDayHint()
-
-        AlertDialog.Builder(this)
-            .setTitle(if (existing == null) "新建计划" else "编辑计划")
-            .setView(view)
-            .setPositiveButton("保存", null)
-            .setNegativeButton("取消", null)
-            .apply { if (existing != null) setNeutralButton("删除", null) }
-            .show()
-            .also { dialog ->
-                frost(dialog)
-                // 删除：只出现在编辑态，且要再确认一次。
-                // 破坏性操作不该和"保存/取消"平铺在同一个层级，更不该直接躺在首页卡片上。
-                if (existing != null) {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(DANGER)
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        confirmDelete(existing) { dialog.dismiss() }
-                    }
-                }
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    val name = editName.text.toString().trim().ifBlank {
-                        editName.hint?.toString()?.trim().orEmpty()
-                    }
-                    val mins = currentBaseMinutes()
-                    val packages = chosen.toMutableList()
-                    when {
-                        name.isEmpty() || name == "计划名称（留空则用应用名）" ->
-                            Toast.makeText(this, "先选一个关联应用，或填个名称", Toast.LENGTH_SHORT).show()
-                        mins !in 1..999 ->
-                            Toast.makeText(this, "时长需为 1-999 分钟", Toast.LENGTH_SHORT).show()
-                        packages.isEmpty() ->
-                            Toast.makeText(this, "至少选一个关联应用", Toast.LENGTH_SHORT).show()
-                        (1..7).none { slots[it]?.on == true } ->
-                            Toast.makeText(this, "至少勾选一天", Toast.LENGTH_SHORT).show()
-                        else -> {
-                            syncBase()
-                            val plan = existing?.copy(
-                                name = name,
-                                start = timeStr,
-                                targetMinutes = mins,
-                                packages = packages,
-                                slots = slots,
-                                weekMode = weekMode,
-                            ) ?: Plan(
-                                id = UUID.randomUUID().toString().take(8),
-                                name = name,
-                                start = timeStr,
-                                targetMinutes = mins,
-                                packages = packages,
-                                slots = slots,
-                                weekMode = weekMode,
-                            )
-                            if (existing == null) PlanStore.addPlan(this, plan)
-                            else PlanStore.updatePlan(this, plan)
-                            // 触发 reloadEngines：改了时间/时长/排期都会重建对应引擎
-                            MonitorService.start(this)
-                            dialog.dismiss()
-                            refresh()
-                        }
-                    }
-                }
-            }
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+        editor.show()
+        editor.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     }
 
     /** 按天微调：7 行 = 开关 + 时间 + 时长 */

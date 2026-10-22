@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap
 class MonitorService : Service() {
 
     companion object {
+        private val sessionLock = Any()
         val engines = ConcurrentHashMap<String, Engine>()
 
         /** 错过追击次数上限（v0.8）：追 5 次不来就别追了，等自动结算 */
@@ -65,6 +66,7 @@ class MonitorService : Service() {
         }
 
         fun start(ctx: Context) {
+            if (!PlanStore.monitoringEnabled(ctx)) return
             // 兜住 ForegroundServiceStartNotAllowedException（Android 12+ 后台起前台服务受限）。
             // 从开机广播里拉起时尤其可能撞上；崩在 receiver 里会变成"应用老是停止运行"，
             // 比"这次没起来"糟糕得多——下次打开应用就恢复了。
@@ -75,8 +77,45 @@ class MonitorService : Service() {
             }
         }
 
+        fun resume(ctx: Context) {
+            PlanStore.setMonitoringEnabled(ctx, true)
+            ctx.packageManager.setComponentEnabledSetting(
+                android.content.ComponentName(ctx, BootReceiver::class.java),
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP,
+            )
+            start(ctx)
+        }
+
+        fun stopManually(ctx: Context) {
+            // Persist the opt-out before stopping: neither sticky restart nor boot/update may undo it.
+            PlanStore.setMonitoringEnabled(ctx, false)
+            ctx.packageManager.setComponentEnabledSetting(
+                android.content.ComponentName(ctx, BootReceiver::class.java),
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP,
+            )
+            synchronized(sessionLock) {
+                val now = System.currentTimeMillis() / 1000
+                val saved = PlanStore.loadSessions(ctx).toMutableMap()
+                for ((id, eng) in engines) saved[id] = eng.session
+                for (session in saved.values) {
+                    if (session.state == SState.SETTLED) continue
+                    session.lastObserved = false
+                    session.lastTick = now
+                    session.curDevStart = null
+                    session.devConfirmed = false
+                    session.contDevSec = 0.0
+                }
+                PlanStore.saveSessions(ctx, saved, synchronous = true)
+            }
+            pendingFusePlanId = null
+            Updater.DownloadState.cancelRequested = true
+            ctx.stopService(Intent(ctx, MonitorService::class.java))
+            Notify.cancelAll(ctx)
+        }
+
         /** 落盘全部会话。服务、通知动作、Activity 三处都要落盘，抽一个静态入口免得各写一份。 */
         fun persist(ctx: Context) {
+            if (!PlanStore.monitoringEnabled(ctx)) return // Explicit stop already saved a synchronized snapshot.
             PlanStore.saveSessions(ctx, engines.entries.associate { it.key to it.value.session })
         }
     }
@@ -138,6 +177,10 @@ class MonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!PlanStore.monitoringEnabled(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (!running) {
             ServiceCompat.startForeground(
                 this, 1, buildSelfNotification(),
@@ -209,7 +252,10 @@ class MonitorService : Service() {
         }
     }
 
-    private fun tick() {
+    private fun tick() = synchronized(sessionLock) { tickLocked() }
+
+    private fun tickLocked() {
+        if (!PlanStore.monitoringEnabled(this)) return
         val now = System.currentTimeMillis() / 1000
         // 跨天：先把昨天没结算的如实记一笔，再重建引擎（跑什么由"今天适用哪些计划"决定）
         val todayDate = LocalDate.now()
@@ -316,8 +362,8 @@ class MonitorService : Service() {
                     val n = missNagCount[eng.plan.id] ?: 0
                     if (n < MISS_NAG_MAX) {
                         Notify.remind(
-                            this, eng.plan.id.hashCode(), "已错过 ${(late / 60).toInt()} 分钟",
-                            "到点 ${(late / 60).toInt()} 分钟了，「${eng.plan.name}」还没开始。",
+                            this, eng.plan.id.hashCode(), "${eng.plan.name} · 还没开始",
+                            "原定 ${eng.plan.start} 开始，进入关联应用后开始记录。",
                             eng.plan.id,
                         )
                         lastNagAt[eng.plan.id] = now
@@ -424,6 +470,7 @@ class MonitorService : Service() {
             }
             is Act.Gap -> Unit
             is Act.Settle -> {
+                Notify.cancelRemind(this, eng.plan.id)
                 Ledger.record(this, eng, a)
                 // 结算了就没必要再静音了，留着会让明天的"稍后"莫名其妙的失效/生效
                 PlanStore.clearSnooze(this, eng.plan.id)

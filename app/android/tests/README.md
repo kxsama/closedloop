@@ -5,6 +5,14 @@ They cover idle scheduling, near-term starts, midnight, screen-off reminders,
 effective-time accounting across lock/unlock and sleep, missed-plan settlement,
 escalation, cooldown recovery, late arrival and completion.
 
+v0.12 also covers first-tick expiration when opening 566 minutes late, preserving
+tomorrow's recurring schedule, deep-copy plan editing, per-day edit cancellation,
+preserving customized days, and unobserved time when monitoring resumes.
+
+The explicit stop flag, disabled boot component, activity/keyboard layout and OEM
+autostart behavior still require Android runtime testing; JVM checks do not prove
+those platform behaviors.
+
 Prerequisites: JDK 17+, Python 3, and Kotlin compiler 2.0.21 already in a Gradle
 dependency cache. From `app/android`:
 

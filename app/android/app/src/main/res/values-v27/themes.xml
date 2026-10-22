@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ClosedLoop" parent="Theme.ClosedLoop.Base">
+        <item name="android:navigationBarColor">#F7F9F7</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+    <style name="Theme.ClosedLoop.Editor" parent="Theme.ClosedLoop.Editor.Base">
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

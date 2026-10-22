@@ -45,7 +45,8 @@ object Health {
     fun items(ctx: Context): List<Item> = listOf(
         Item(
             MONITOR, "后台监测",
-            "监测启动后不必每天点开。没有计划执行时会减少检查，执行中亮屏每 3 秒检查。",
+            if (PlanStore.monitoringEnabled(ctx)) "监测已开启后，不必每天点开应用。等待计划时减少检查。"
+            else "你已手动停止监测和自动启动。点「恢复监测」后才会重新运行。",
             MonitorService.running, core = true,
         ),
         Item(
@@ -65,10 +66,9 @@ object Health {
         ),
         Item(
             AUTOSTART, "自启动与后台运行",
-            "在系统中允许「闭环」自启动，并检查应用省电是否允许后台运行。黑鲨 / JOYUI 可先尝试此入口；" +
-                "若没有对应页面，请在系统设置中搜索「自启动」。系统未提供可靠的读取接口，此处需要你手动确认。" +
-                "重启后先不打开闭环，检查下一次计划是否提醒。手动强行停止后需再打开一次。",
-            false, core = false, manual = true,
+            "先在系统中允许自启动和后台运行，再勾选下方确认。此开关无法自动读取，" +
+                "勾选代表你已手动检查，实际生效以重启后的提醒为准。入口不可用时，可在系统设置搜索「自启动」。",
+            PlanStore.autostartConfirmed(ctx), core = false, manual = true,
         ),
         Item(
             FULLSCREEN, "全屏通知",
@@ -88,9 +88,10 @@ object Health {
     fun allOk(ctx: Context): Boolean = items(ctx).none { !it.manual && !it.ok }
 
     private fun notificationsAllowed(ctx: Context): Boolean =
-        Build.VERSION.SDK_INT < 33 ||
-            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
+        androidx.core.app.NotificationManagerCompat.from(ctx).areNotificationsEnabled() &&
+            (Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED)
 
     private fun ignoringBattery(ctx: Context): Boolean = try {
         (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -118,7 +119,7 @@ object Health {
     fun open(ctx: Context, key: String) {
         val intent: Intent = when (key) {
             MONITOR -> {
-                MonitorService.start(ctx)
+                MonitorService.resume(ctx)
                 return
             }
             AUTOSTART -> Intent("miui.intent.action.OP_AUTO_START")

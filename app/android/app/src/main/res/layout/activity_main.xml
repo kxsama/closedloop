@@ -1,170 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  首页（v0.9）。
-  信息顺序即优先级：今天还剩什么 → 有没有东西要处理 → 各计划详情 → 复盘。
-  打开应用第一眼要能回答"现在什么情况"，而不是先看到一堆卡片再自己拼。
--->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fillViewport="true">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingLeft="18dp"
-        android:paddingTop="16dp"
-        android:paddingRight="18dp"
-        android:paddingBottom="24dp">
-
-        <!-- ===== 顶栏 ===== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="闭环"
-                android:textColor="#1F1E1B"
-                android:textSize="22sp"
-                android:textStyle="bold" />
-
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
-
-            <TextView
-                android:id="@+id/dateView"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#6B6A66"
-                android:textSize="12sp" />
-
-            <TextView
-                android:id="@+id/btnUpdate"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:paddingStart="12dp"
-                android:text="检查更新"
-                android:textColor="#177A50"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="22dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical">
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="闭环" android:textColor="#172D24" android:textSize="25sp" android:textStyle="bold" />
+                <TextView android:id="@+id/dateView" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp" android:textColor="#65766C" android:textSize="12sp" />
+            </LinearLayout>
+            <TextView android:id="@+id/btnHealth" android:layout_width="52dp" android:layout_height="48dp"
+                android:gravity="center" android:text="设置" android:textColor="#50665A" android:textSize="13sp" />
+            <TextView android:id="@+id/btnUpdate" android:layout_width="wrap_content" android:layout_height="48dp"
+                android:gravity="center" android:paddingStart="8dp" android:paddingEnd="4dp"
+                android:text="检查更新" android:textColor="#207B5E" android:textSize="12sp" />
         </LinearLayout>
-
-        <!-- ===== 一句话现状：这一屏最重要的东西 ===== -->
-        <TextView
-            android:id="@+id/headline"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:lineSpacingMultiplier="1.35"
-            android:textColor="#1F1E1B"
-            android:textSize="19sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/subline"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:lineSpacingMultiplier="1.4"
-            android:textColor="#6B6A66"
-            android:textSize="11sp" />
-
-        <!-- ===== 待处理提示条（有才显示） ===== -->
-        <TextView
-            android:id="@+id/banner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/bg_banner"
-            android:padding="13dp"
-            android:textColor="#8A5A00"
-            android:textSize="12sp"
-            android:visibility="gone" />
-
-        <!-- ===== 计划卡片 ===== -->
-        <LinearLayout
-            android:id="@+id/plansContainer"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:orientation="vertical" />
-
-        <Button
-            android:id="@+id/btnNew"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:backgroundTint="#22A06B"
-            android:text="＋ 新建一个计划"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <!-- 今天没安排、但别处有计划时，这里是找回它们的入口 -->
-        <TextView
-            android:id="@+id/allPlans"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:gravity="center"
-            android:padding="8dp"
-            android:textColor="#6B6A66"
-            android:textSize="11sp" />
-
-        <!-- ===== 复盘：默认收起，点开才看 ===== -->
-        <LinearLayout
-            android:id="@+id/reviewHead"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="当日复盘"
-                android:textColor="#1F1E1B"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/reviewSummary"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:paddingStart="10dp"
-                android:textColor="#6B6A66"
-                android:textSize="11sp" />
-
-            <TextView
-                android:id="@+id/reviewToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="展开"
-                android:textColor="#177A50"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp" android:orientation="vertical" android:padding="22dp" android:background="@drawable/bg_hero">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="此刻" android:textColor="#207B5E" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/headline" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:textColor="#172D24" android:textSize="23sp"
+                android:textStyle="bold" android:lineSpacingMultiplier="1.2" />
+            <TextView android:id="@+id/subline" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:textColor="#526D5D" android:textSize="13sp" android:lineSpacingMultiplier="1.4" />
         </LinearLayout>
-
-        <TextView
-            android:id="@+id/review"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_card"
-            android:lineSpacingMultiplier="1.55"
-            android:padding="16dp"
-            android:textColor="#6B6A66"
-            android:textSize="11sp"
-            android:visibility="gone" />
+        <TextView android:id="@+id/banner" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" android:background="@drawable/bg_banner" android:padding="14dp"
+            android:textColor="#825E28" android:textSize="12sp" android:minHeight="48dp" android:visibility="gone" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="22dp"
+            android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:text="今天的安排" android:textColor="#172D24" android:textSize="16sp" android:textStyle="bold" />
+            <Button android:id="@+id/btnNew" android:layout_width="132dp" android:layout_height="48dp"
+                android:background="@drawable/bg_primary" android:backgroundTint="@null" android:text="＋ 新建计划"
+                android:textAllCaps="false" android:textSize="13sp" android:textColor="#FFFFFF" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/plansContainer" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="14dp" android:orientation="vertical" />
+        <TextView android:id="@+id/allPlans" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:gravity="center_vertical" android:minHeight="48dp" android:textColor="#52665B" android:textSize="13sp" />
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:background="#E2EAE5" />
+        <LinearLayout android:id="@+id/reviewHead" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="10dp" android:minHeight="48dp" android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="今日记录" android:textSize="14sp" android:textStyle="bold" android:textColor="#172D24" />
+            <TextView android:id="@+id/reviewSummary" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                android:paddingStart="10dp" android:textSize="12sp" android:textColor="#65766C" />
+            <TextView android:id="@+id/reviewToggle" android:layout_width="48dp" android:layout_height="48dp"
+                android:gravity="center" android:text="展开" android:textSize="12sp" android:textColor="#207B5E" />
+        </LinearLayout>
+        <TextView android:id="@+id/review" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:padding="16dp" android:background="@drawable/bg_card" android:textSize="12sp"
+            android:textColor="#52665B" android:lineSpacingMultiplier="1.6" android:visibility="gone" />
+        <TextView android:id="@+id/btnStop" android:layout_width="wrap_content" android:layout_height="48dp"
+            android:layout_marginTop="20dp" android:layout_gravity="center_horizontal" android:gravity="center"
+            android:paddingStart="14dp" android:paddingEnd="14dp" android:text="停止并退出"
+            android:textColor="#8B7066" android:textSize="12sp" />
     </LinearLayout>
 </ScrollView>

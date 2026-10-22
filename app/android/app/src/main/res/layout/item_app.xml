@@ -4,10 +4,13 @@
     android:layout_height="wrap_content"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:padding="6dp">
+    android:padding="10dp"
+    android:minHeight="60dp">
 
     <ImageView
         android:id="@+id/appIcon"
+        android:importantForAccessibility="no"
+        android:contentDescription="@null"
         android:layout_width="38dp"
         android:layout_height="38dp" />
 

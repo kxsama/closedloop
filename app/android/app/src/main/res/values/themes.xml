@@ -1,9 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ClosedLoop" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="colorAccent">#22A06B</item>
-        <item name="android:windowBackground">#F6F6F4</item>
-        <item name="android:statusBarColor">#F6F6F4</item>
+    <style name="Theme.ClosedLoop.Base" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorAccent">#207B5E</item>
+        <item name="android:windowBackground">#F7F9F7</item>
+        <item name="android:statusBarColor">#F7F9F7</item>
+        <item name="android:navigationBarColor">#172D24</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:fontFamily">sans</item>
     </style>
+    <style name="Theme.ClosedLoop" parent="Theme.ClosedLoop.Base" />
+    <style name="Theme.ClosedLoop.Editor.Base" parent="Theme.ClosedLoop">
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowBackground">#FFFFFF</item>
+        <item name="android:statusBarColor">#FFFFFF</item>
+        <item name="android:navigationBarColor">#172D24</item>
+    </style>
+    <style name="Theme.ClosedLoop.Editor" parent="Theme.ClosedLoop.Editor.Base" />
 </resources>
