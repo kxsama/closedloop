@@ -2,15 +2,19 @@ package com.closedloop.app
 
 import android.app.AppOpsManager
 import android.app.Service
+import android.app.KeyguardManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -18,13 +22,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
 
-/** 前台服务：每秒轮询前台应用，驱动所有计划引擎，输出提醒与常驻催促。 */
+/** 执行中亮屏每 3 秒监测；待机降低频率，屏幕/时间变化立即重查。 */
 class MonitorService : Service() {
 
     companion object {
@@ -37,9 +43,9 @@ class MonitorService : Service() {
         @Volatile
         var pendingFusePlanId: String? = null
 
-        /** Activity 注册的刷新回调 */
         @Volatile
-        var onTick: (() -> Unit)? = null
+        var running = false
+            private set
 
         fun hasUsageAccess(ctx: Context): Boolean {
             val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -64,7 +70,8 @@ class MonitorService : Service() {
             // 比"这次没起来"糟糕得多——下次打开应用就恢复了。
             try {
                 ContextCompat.startForegroundService(ctx, Intent(ctx, MonitorService::class.java))
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("ClosedLoop", "Monitor start rejected", e)
             }
         }
 
@@ -76,6 +83,15 @@ class MonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loopJob: Job? = null
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var reloadRequested = false
+    private val environmentReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_TIME_CHANGED ||
+                intent.action == Intent.ACTION_TIMEZONE_CHANGED) reloadRequested = true
+            wake.trySend(Unit)
+        }
+    }
     private val labelCache = ConcurrentHashMap<String, String>()
 
     /** 每计划上一次「有声提醒」时刻（秒），用于重复提醒节流 */
@@ -93,7 +109,9 @@ class MonitorService : Service() {
     private var lastUserActivityAt = System.currentTimeMillis() / 1000
     private var lastIdleNagAt = 0L
 
-    private var tickCount = 0L
+    private var lastPersistAt = 0L
+    private var nagPersonaKey: Pair<Int, Map<String, Any>>? = null
+    private var nagPersonaText = ""
 
     /** 引擎对应的日期。跨天必须重建——按天排期后，周一的计划不能跑到周二去（v0.8）。 */
     private var engineDay: LocalDate = LocalDate.now()
@@ -109,17 +127,28 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         Notify.ensureChannels(this)
+        ContextCompat.registerReceiver(this, environmentReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(Intent.ACTION_DATE_CHANGED)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Notify.nagUpdate(this, "闭环监测中", "等待计划开始…", 1, 0.0, 1.0)
-        ServiceCompat.startForeground(
-            this, 1, buildSelfNotification(),
-            if (Build.VERSION.SDK_INT >= 34)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            else 0,
-        )
-        reloadEngines()
+        if (!running) {
+            ServiceCompat.startForeground(
+                this, 1, buildSelfNotification(),
+                if (Build.VERSION.SDK_INT >= 34)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else 0,
+            )
+        }
+        running = true
+        reloadRequested = true
+        wake.trySend(Unit)
         // 只在没有循环时启动一个（v0.9）。以前每次 start() 都 launch 一个新 loop，
         // 而 Activity 每次 onResume 都会 start()——一次会话里切几次后台就多出几条循环在跑。
         // 计时按真实时间差算不会算错，但无谓地耗电、也让状态更新互相打架。
@@ -169,9 +198,14 @@ class MonitorService : Service() {
         while (scope.isActive) {
             try {
                 tick()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("ClosedLoop", "Monitor tick failed", e)
             }
-            delay(3000)   // 3 秒轮询：省电（用户电池弱）；计时按真实时间差算，精度不受影响
+            val nowMs = System.currentTimeMillis()
+            val midnight = LocalDate.now().plusDays(1).atStartOfDay(ZoneId.systemDefault())
+                .toInstant().toEpochMilli()
+            val wait = MonitorCadence.delayMs(nowMs, canObserve(), engines.values.toList(), midnight)
+            withTimeoutOrNull(wait) { wake.receive() }
         }
     }
 
@@ -184,10 +218,18 @@ class MonitorService : Service() {
             settleYesterday()
             missNagCount.clear()
             lastNagAt.clear()
+            reloadRequested = true
+        }
+        // Close yesterday before reloading, including when onStartCommand wakes a sleeping service.
+        if (reloadRequested) {
+            reloadRequested = false
             reloadEngines()
         }
         val interactive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
-        val fg = if (interactive) foregroundPackage() else null
+        val observable = interactive && !(getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+        val needsForeground = MonitorCadence.needsForeground(now, engines.values.toList())
+        // No plan is executing/due: don't ask UsageStats about unrelated phone use.
+        val fg = if (observable && needsForeground) foregroundPackage() else null
 
         // 息屏跟踪
         if (!interactive && screenOffSince == null) screenOffSince = now
@@ -197,7 +239,8 @@ class MonitorService : Service() {
 
         for ((_, eng) in engines) {
             if (eng.session.state == SState.SETTLED) continue
-            val acts = eng.tick(now, fg, locked = !interactive)
+            if (eng.session.state == SState.WAITING && now < eng.plan.startEpoch(eng.today)) continue
+            val acts = eng.tick(now, fg, locked = !observable)
             for (a in acts) handleAct(eng, a)
             if (eng.session.state == SState.RUNNING) {
                 val st = eng.status(now, fg)
@@ -218,7 +261,15 @@ class MonitorService : Service() {
             val text = when {
                 // 静音期间常驻通知要说清楚"我不是不管了"，否则用户会以为坏了
                 snoozeTill > now -> "已静音到 ${hhmm(snoozeTill)}，计时照走"
-                eng.session.devConfirmed -> Persona.say(lvl.coerceAtLeast(2), ctx)
+                eng.session.devConfirmed -> {
+                    // Randomizing the same message every tick defeats notification deduplication.
+                    val key = lvl to ctx
+                    if (key != nagPersonaKey) {
+                        nagPersonaKey = key
+                        nagPersonaText = Persona.say(lvl.coerceAtLeast(2), ctx)
+                    }
+                    nagPersonaText
+                }
                 else -> "${plan.name}：有效 ${(st["effectiveSec"] as Double / 60).toInt()} 分 / 剩 $left 分"
             }
             Notify.nagUpdate(
@@ -234,11 +285,12 @@ class MonitorService : Service() {
             }
         }
 
-        // 会话持久化（约每 30 秒 = 10 个 tick）
-        tickCount += 1
-        if (tickCount % 10 == 0L) persistSessions()
-
-        onTick?.invoke()
+        // Use elapsed time: adaptive polling must not stretch active-session persistence.
+        val elapsed = SystemClock.elapsedRealtime()
+        if (elapsed - lastPersistAt >= 30_000) {
+            persistSessions()
+            lastPersistAt = elapsed
+        }
     }
 
     /** 有声重复提醒：这是核心机制——不是通知一次就完，而是追到你去为止。
@@ -322,6 +374,10 @@ class MonitorService : Service() {
         }
     }
 
+    private fun canObserve(): Boolean =
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive &&
+            !(getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+
     /** 夜间静默：22:30 到次日 07:00 不发有声提醒。 */
     private fun isQuietHours(): Boolean {
         val t = java.time.LocalTime.now()
@@ -350,9 +406,11 @@ class MonitorService : Service() {
     private fun handleAct(eng: Engine, a: Act) {
         val st = eng.status(System.currentTimeMillis() / 1000)
         val ctx = ctxOf(eng, st)
+        val canRemind = !isQuietHours() &&
+            PlanStore.snoozeUntil(this, eng.plan.id) <= System.currentTimeMillis() / 1000
         when (a) {
             is Act.Remind -> {
-                Notify.remind(this, eng.plan.id.hashCode(), "到点了", Persona.say(1, ctx), eng.plan.id)
+                if (canRemind) Notify.remind(this, eng.plan.id.hashCode(), "到点了", Persona.say(1, ctx), eng.plan.id)
                 lastNagAt[eng.plan.id] = System.currentTimeMillis() / 1000
             }
             is Act.Escalate -> Unit
@@ -362,7 +420,7 @@ class MonitorService : Service() {
             is Act.CooldownExit -> Unit
             is Act.FuseAsk -> {
                 pendingFusePlanId = eng.plan.id
-                Notify.remind(this, eng.plan.id.hashCode() + 7, "还要吗？", Persona.say(4, ctx), eng.plan.id)
+                if (canRemind) Notify.remind(this, eng.plan.id.hashCode() + 7, "还要吗？", Persona.say(4, ctx), eng.plan.id)
             }
             is Act.Gap -> Unit
             is Act.Settle -> {
@@ -371,7 +429,7 @@ class MonitorService : Service() {
                 PlanStore.clearSnooze(this, eng.plan.id)
                 persistSessions()
                 Notify.nagCancel(this)
-                if (a.result == Engine.RESULT_DONE) {
+                if (a.result == Engine.RESULT_DONE && canRemind) {
                     Notify.remind(
                         this, eng.plan.id.hashCode() + 3, "完成",
                         Persona.sayDone(mapOf("plan" to eng.plan.name, "target" to eng.plan.targetMinutes)),
@@ -459,6 +517,8 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
+        unregisterReceiver(environmentReceiver)
         persistSessions()
         scope.cancel()
         super.onDestroy()

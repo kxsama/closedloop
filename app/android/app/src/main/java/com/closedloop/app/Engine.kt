@@ -82,6 +82,7 @@ data class Session(
     var devConfirmed: Boolean = false,
     var contDevSec: Double = 0.0,
     var lastTick: Long? = null,
+    var lastObserved: Boolean = false, // Unknown/screen-off time is never credited on return.
     var recheckAt: Long = 0L,
     var level: Int = 0,
     var fused: Boolean = false,
@@ -174,18 +175,15 @@ class Engine(
             s.curDevStart = null
             s.devConfirmed = false
             s.contDevSec = 0.0
+            s.lastObserved = false
             acts.add(Act.Gap(last, now))
         }
 
-        if (locked || fg == null) {
-            s.lastTick = now
-            return acts
-        }
-
-        val delta = if (last != null) (now - last).toDouble() else 0.0
+        val delta = if (last != null && s.lastObserved) (now - last).toDouble() else 0.0
         s.lastTick = now
 
         if (s.state == SState.WAITING) {
+            s.lastObserved = !locked && fg != null
             if (now >= plan.startEpoch(today)) {
                 s.state = SState.RUNNING
                 s.level = 1
@@ -210,19 +208,29 @@ class Engine(
             return acts
         }
 
+        // Scheduling/timeout decisions above don't depend on seeing a foreground app.
+        // A screen-off interval must neither add effective time nor prolong a deviation.
+        if (locked || fg == null) {
+            s.lastObserved = false
+            s.curDevStart = null
+            s.devConfirmed = false
+            s.contDevSec = 0.0
+            return acts
+        }
+        s.lastObserved = true
         val compliant = plan.matches(fg)
 
         if (compliant) {
+            if (s.state == SState.COOLDOWN) {
+                s.state = SState.RUNNING
+                acts.add(Act.CooldownExit)
+            }
             val devStart = s.curDevStart
             if (devStart != null) {
                 if (s.devConfirmed) {
                     s.curDevStart = null
                     s.devConfirmed = false
                     s.contDevSec = 0.0
-                    if (s.state == SState.COOLDOWN) {
-                        s.state = SState.RUNNING
-                        acts.add(Act.CooldownExit)
-                    }
                     acts.add(Act.DeviationEnd)
                 } else {
                     // 宽限内的毛刺：整段补记为有效——但前提是"已经开始过"（本段偏离之前有有效时长）。

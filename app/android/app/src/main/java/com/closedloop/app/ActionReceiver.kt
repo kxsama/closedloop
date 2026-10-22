@@ -44,6 +44,8 @@ class ActionReceiver : BroadcastReceiver() {
                 Notify.nagCancel(ctx)
             }
         }
+        // An action may arrive during a slow idle tick; apply its visible state promptly.
+        MonitorService.start(ctx)
     }
 
     companion object {

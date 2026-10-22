@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
     private val refresher = object : Runnable {
         override fun run() {
             refresh()
-            handler.postDelayed(this, 3000)   // 与服务 3 秒轮询对齐；tick 回调也会触发刷新
+            handler.postDelayed(this, 3000)   // Only refresh the visible Activity; no service callback.
         }
     }
 
@@ -120,7 +120,6 @@ class MainActivity : AppCompatActivity() {
         applyReviewVisibility()
 
         Notify.ensureChannels(this)
-        MonitorService.onTick = { runOnUiThread { refresh() } }
 
         // 首次启动直接进体检页（只打扰这一次）。
         // 以前这里是一次光秃秃的通知权限请求——5 项设置里只管了 1 项，

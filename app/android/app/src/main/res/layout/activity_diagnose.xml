@@ -24,7 +24,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:lineSpacingMultiplier="1.5"
-            android:text="它靠 5 项系统设置干活。全部打开，它才是那个会验收你的应用；少一项，它可能安静地什么都不做——而你不会收到任何提示。"
+            android:text="先确认监测已启动，再检查提醒所需的系统设置。自启动与电池白名单分别控制，开启后通常不必每天点开。厂商的自启动开关需要你在系统中确认。"
             android:textColor="#6B6A66"
             android:textSize="12sp" />
 

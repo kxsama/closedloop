@@ -36,15 +36,19 @@ class DiagnoseActivity : AppCompatActivity() {
     /** 从系统设置回来时重新回读——这是这一页的全部价值所在，别只在 onCreate 查一次。 */
     override fun onResume() {
         super.onResume()
+        if (MonitorService.hasUsageAccess(this) && !MonitorService.running) {
+            MonitorService.start(this)
+            list.postDelayed({ if (!isFinishing && !isDestroyed) render() }, 500)
+        }
         render()
     }
 
     private fun render() {
         val items = Health.items(this)
-        val problems = items.count { !it.ok }
+        val problems = items.count { !it.manual && !it.ok }
 
         if (problems == 0) {
-            summary.text = "都打开了。它可以正常工作。"
+            summary.text = "可检查的项目正常；自启动请在系统设置中确认。"
             summary.setTextColor(0xFF22A06B.toInt())
         } else {
             val core = items.count { it.core && !it.ok }
@@ -74,7 +78,7 @@ class DiagnoseActivity : AppCompatActivity() {
 
         // 左侧状态标记：用文字而不是图标，省一个资源、也不会在小字号下糊
         val mark = TextView(this).apply {
-            text = if (item.ok) "✓" else "○"
+            text = if (item.manual) "?" else if (item.ok) "✓" else "○"
             textSize = 15f
             setTypeface(null, Typeface.BOLD)
             setTextColor(if (item.ok) 0xFF22A06B.toInt() else 0xFFE8A13A.toInt())
@@ -91,12 +95,17 @@ class DiagnoseActivity : AppCompatActivity() {
         })
 
         val action = TextView(this).apply {
-            text = if (item.ok) "已开启" else "去开启 ›"
+            text = when {
+                item.manual -> "去确认 ›"
+                item.ok -> "已开启"
+                item.key == Health.MONITOR -> "启动 ›"
+                else -> "去开启 ›"
+            }
             textSize = 12f
             setTextColor(if (item.ok) 0xFFB4B2A9.toInt() else 0xFF22A06B.toInt())
             setTypeface(null, Typeface.BOLD)
             setPadding(dp(8), dp(4), 0, dp(4))
-            if (!item.ok) setOnClickListener { Health.open(this@DiagnoseActivity, item.key) }
+            if (!item.ok) setOnClickListener { openItem(item) }
         }
         top.addView(action)
 
@@ -110,8 +119,13 @@ class DiagnoseActivity : AppCompatActivity() {
         })
 
         // 整行可点：小屏上"去开启"这几个字未必好按，整块热区更宽容
-        if (!item.ok) box.setOnClickListener { Health.open(this, item.key) }
+        if (!item.ok) box.setOnClickListener { openItem(item) }
         return box
+    }
+
+    private fun openItem(item: Health.Item) {
+        Health.open(this, item.key)
+        if (item.key == Health.MONITOR) list.postDelayed({ if (!isFinishing && !isDestroyed) render() }, 500)
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()

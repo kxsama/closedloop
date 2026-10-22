@@ -29,6 +29,8 @@ object Health {
     const val BATTERY = "battery"
     const val FULLSCREEN = "fullscreen"
     const val INSTALL = "install"
+    const val AUTOSTART = "autostart"
+    const val MONITOR = "monitor"
 
     /** @param core 缺了它核心机制就不成立（标红）；false 表示"缺了会变差，但还能用"。 */
     data class Item(
@@ -37,9 +39,15 @@ object Health {
         val why: String,
         val ok: Boolean,
         val core: Boolean,
+        val manual: Boolean = false,
     )
 
     fun items(ctx: Context): List<Item> = listOf(
+        Item(
+            MONITOR, "后台监测",
+            "监测启动后不必每天点开。没有计划执行时会减少检查，执行中亮屏每 3 秒检查。",
+            MonitorService.running, core = true,
+        ),
         Item(
             USAGE, "使用情况访问",
             "知道此刻在哪个应用里——整个验收机制的地基。数据只留在本机。",
@@ -52,8 +60,15 @@ object Health {
         ),
         Item(
             BATTERY, "电池优化白名单",
-            "不加白名单，国产 ROM 会在后台把监测掐掉——表现就是「计划到点没反应」。",
+            "允许监测留在后台，减少系统省电策略打断提醒的机会。它与「自启动」是两项独立设置。",
             ignoringBattery(ctx), core = true,
+        ),
+        Item(
+            AUTOSTART, "自启动与后台运行",
+            "在系统中允许「闭环」自启动，并检查应用省电是否允许后台运行。黑鲨 / JOYUI 可先尝试此入口；" +
+                "若没有对应页面，请在系统设置中搜索「自启动」。系统未提供可靠的读取接口，此处需要你手动确认。" +
+                "重启后先不打开闭环，检查下一次计划是否提醒。手动强行停止后需再打开一次。",
+            false, core = false, manual = true,
         ),
         Item(
             FULLSCREEN, "全屏通知",
@@ -70,7 +85,7 @@ object Health {
     /** 需要用户处理的核心项（提示条只算核心项，避免为了更新功能去逼人开权限）。 */
     fun pending(ctx: Context): List<Item> = items(ctx).filter { it.core && !it.ok }
 
-    fun allOk(ctx: Context): Boolean = items(ctx).count { !it.ok } == 0
+    fun allOk(ctx: Context): Boolean = items(ctx).none { !it.manual && !it.ok }
 
     private fun notificationsAllowed(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
@@ -102,6 +117,12 @@ object Health {
      */
     fun open(ctx: Context, key: String) {
         val intent: Intent = when (key) {
+            MONITOR -> {
+                MonitorService.start(ctx)
+                return
+            }
+            AUTOSTART -> Intent("miui.intent.action.OP_AUTO_START")
+                .addCategory(Intent.CATEGORY_DEFAULT)
             USAGE -> Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
 
             NOTIFY -> {

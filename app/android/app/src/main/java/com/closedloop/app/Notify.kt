@@ -27,6 +27,9 @@ object Notify {
      *  状态栏小图标只能走 alpha 剪影（系统限制），彩色要靠 largeIcon 呈现。 */
     @Volatile
     private var largeIconCache: Bitmap? = null
+    private var lastNag: NagContent? = null
+
+    private data class NagContent(val title: String, val text: String, val color: Int, val progress: Int)
 
     private fun largeIcon(ctx: Context): Bitmap? {
         largeIconCache?.let { return it }
@@ -125,6 +128,7 @@ object Notify {
 
 
     /** 常驻催促通知：进度条 + 状态文案，随引擎每跳更新，只更新不响。 */
+    @Synchronized
     fun nagUpdate(
         ctx: Context,
         title: String,
@@ -139,6 +143,8 @@ object Notify {
             else -> COLOR_OK
         }
         val progress = if (targetSec > 0) (effectiveSec * 100 / targetSec).toInt() else 0
+        val content = NagContent(title, text, color, progress.coerceIn(0, 100))
+        if (content == lastNag) return
         val n = NotificationCompat.Builder(ctx, CH_NAG)
             .setSmallIcon(R.drawable.ic_notify)
             .setLargeIcon(largeIcon(ctx))
@@ -151,9 +157,14 @@ object Notify {
             .setContentIntent(contentIntent(ctx))
             .build()
         manager(ctx).notify(NAG_ID, n)
+        lastNag = content
     }
 
-    fun nagCancel(ctx: Context) = manager(ctx).cancel(NAG_ID)
+    @Synchronized
+    fun nagCancel(ctx: Context) {
+        manager(ctx).cancel(NAG_ID)
+        lastNag = null
+    }
 
     /** 下载进度通知（v0.7）：切后台也看得见"还在下载"——修复"进度框没了、
      *  实际还在下、用户又点一遍"的问题。total<=0 时显示不确定进度。 */

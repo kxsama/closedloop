@@ -19,7 +19,9 @@ object PlanStore {
 
     /** 会话持久化：App 重启后恢复进行中/已结算的状态，不再"重置为计时中"。 */
     fun saveSessions(ctx: Context, sessions: Map<String, Session>) {
-        pref(ctx).edit().putString(KEY_SESSIONS, gson.toJson(sessions)).apply()
+        val sp = pref(ctx)
+        val json = gson.toJson(sessions)
+        if (sp.getString(KEY_SESSIONS, null) != json) sp.edit().putString(KEY_SESSIONS, json).apply()
     }
 
     fun loadSessions(ctx: Context): Map<String, Session> {
