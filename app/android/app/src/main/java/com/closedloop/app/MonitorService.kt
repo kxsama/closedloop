@@ -114,9 +114,67 @@ class MonitorService : Service() {
         }
 
         /** 落盘全部会话。服务、通知动作、Activity 三处都要落盘，抽一个静态入口免得各写一份。 */
-        fun persist(ctx: Context) {
+        fun persist(ctx: Context) = synchronized(sessionLock) {
             if (!PlanStore.monitoringEnabled(ctx)) return // Explicit stop already saved a synchronized snapshot.
-            PlanStore.saveSessions(ctx, engines.entries.associate { it.key to it.value.session })
+            val sessions = PlanStore.loadSessions(ctx).toMutableMap()
+            engines.forEach { (id, eng) -> sessions[id] = eng.session }
+            PlanStore.saveSessions(ctx, sessions)
+        }
+
+        /** Also used by the visible activity: edits take effect without dropping live progress. */
+        fun refreshPlans(ctx: Context) = synchronized(sessionLock) {
+            val result = SessionLifecycle.reload(
+                PlanStore.loadPlans(ctx), PlanStore.loadSessions(ctx), engines.toMap(), LocalDate.now(),
+            )
+            result.history.forEach { (eng, act) ->
+                Ledger.record(ctx, eng, act)
+                Notify.cancelRemind(ctx, eng.plan.id)
+                PlanStore.clearSnooze(ctx, eng.plan.id)
+            }
+            engines.keys.filter { it !in result.engines }.forEach { Notify.cancelRemind(ctx, it) }
+            engines.clear()
+            engines.putAll(result.engines)
+            PlanStore.saveSessions(ctx, result.sessions)
+            pendingFusePlanId?.let { id ->
+                if (engines[id]?.session?.state !in listOf(SState.RUNNING, SState.COOLDOWN)) pendingFusePlanId = null
+            }
+        }
+
+        /** Notification actions must work after the service process was reclaimed, too. */
+        fun finishPlan(ctx: Context, id: String, reason: String, expectedDate: String? = null): Boolean =
+            synchronized(sessionLock) {
+                refreshPlans(ctx)
+                val eng = engines[id] ?: return@synchronized false
+                if (expectedDate != null && eng.session.date != expectedDate) return@synchronized false
+                if (eng.session.state != SState.SETTLED) {
+                    eng.giveUp(reason).filterIsInstance<Act.Settle>().forEach { Ledger.record(ctx, eng, it) }
+                    PlanStore.saveSessions(ctx, PlanStore.loadSessions(ctx) + (id to eng.session))
+                }
+                if (pendingFusePlanId == id) pendingFusePlanId = null
+                PlanStore.clearSnooze(ctx, id)
+                Notify.cancelRemind(ctx, id)
+                Notify.nagCancel(ctx)
+                true
+            }
+
+        fun continuePlan(ctx: Context, id: String, expectedDate: String? = null) = synchronized(sessionLock) {
+            if (expectedDate != null && engines[id]?.session?.date != expectedDate) return@synchronized
+            engines[id]?.takeIf { it.session.state != SState.SETTLED }?.fuseContinue()
+            if (pendingFusePlanId == id) pendingFusePlanId = null
+            persist(ctx)
+        }
+
+        fun deletePlan(ctx: Context, id: String) = synchronized(sessionLock) {
+            val eng = engines[id]
+            if (eng != null && eng.session.state in listOf(SState.RUNNING, SState.COOLDOWN)) {
+                finishPlan(ctx, id, "删除计划")
+            }
+            PlanStore.deletePlan(ctx, id)
+            engines.remove(id)
+            PlanStore.saveSessions(ctx, PlanStore.loadSessions(ctx) - id)
+            PlanStore.clearSnooze(ctx, id)
+            Notify.cancelRemind(ctx, id)
+            if (pendingFusePlanId == id) pendingFusePlanId = null
         }
     }
 
@@ -210,31 +268,7 @@ class MonitorService : Service() {
     }
 
     fun reloadEngines() {
-        val plans = PlanStore.loadPlans(this)
-        val todayDate = LocalDate.now()
-        val today = todayDate.toString()
-        val saved = PlanStore.loadSessions(this)
-        val keep = mutableSetOf<String>()
-        for (p in plans) {
-            if (!p.enabled) continue
-            // v0.8 按天排期：今天不适用（没勾这天 / 单双周不符）就不建引擎，
-            // 不建就不会提醒、不会追、也不会在首页占位。
-            if (!p.appliesOn(todayDate)) continue
-            keep.add(p.id)
-            val eff = p.forDay(todayDate)
-            val existing = engines[p.id]
-            // 计划被编辑过（时间/时长变了）也要重建，否则引擎还按老时间跑
-            val stale = existing != null && (
-                existing.session.date != today ||
-                    existing.plan.start != eff.start ||
-                    existing.plan.targetMinutes != eff.targetMinutes
-                )
-            if (existing == null || stale) {
-                val sess = saved[p.id]?.takeIf { it.date == today && it.planId == p.id }
-                engines[p.id] = if (sess != null) Engine(eff, session = sess) else Engine(eff)
-            }
-        }
-        engines.keys.retainAll(keep)
+        refreshPlans(this)
     }
 
     private suspend fun loop() {
@@ -261,7 +295,6 @@ class MonitorService : Service() {
         val todayDate = LocalDate.now()
         if (todayDate != engineDay) {
             engineDay = todayDate
-            settleYesterday()
             missNagCount.clear()
             lastNagAt.clear()
             reloadRequested = true
@@ -487,15 +520,6 @@ class MonitorService : Service() {
     }
 
     private fun persistSessions() = persist(this)
-
-    /** 跨天收尾（v0.8）：昨天还没结算的计划按"未完成"落账，不让它凭空消失。
-     *  没有这一步时，日期一翻旧会话被直接丢弃，账本里什么都不留——镜子就不诚实了。 */
-    private fun settleYesterday() {
-        for ((_, eng) in engines) {
-            if (eng.session.state == SState.SETTLED) continue
-            for (a in eng.abandon()) handleAct(eng, a)
-        }
-    }
 
     /** 增量读取 UsageEvents 维护 currentFg，顺带刷新"最近用户活动"时间。
      *  窗口从上次查询点回退 2 秒（防边界丢事件）到当前；服务刚启动回溯 30 分钟恢复现场。

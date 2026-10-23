@@ -52,6 +52,7 @@ object Updater {
         val apkSize: Long,      // 字节
         val versionCode: Int,   // 从 tag 末段数字解析（仅用于展示）
         val versionName: List<Int>, // "v0.10" -> [0, 10]，语义比较用
+        val apkSha256: String? = null, // GitHub asset digest; older releases may not have one.
     )
 
     /** 进程级下载状态（v0.7）：长任务的"进行中"不能只存在于 UI 上。
@@ -79,30 +80,33 @@ object Updater {
         }
 
         fun finish(file: File?) {
-            running = false
             completed = true
             failed = file == null && !cancelRequested
             result = file
+            // Publish the result before UI sees the task as finished.
+            running = false
         }
     }
 
     /** 检查最新 Release。阻塞调用，调用方自己开线程。所有源都失败返回 null。 */
     fun check(): Release? {
         for (prefix in API_SOURCES) {
+            var conn: HttpURLConnection? = null
             try {
-                val conn = URL(prefix + API).openConnection() as HttpURLConnection
+                conn = URL(prefix + API).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = true
                 conn.connectTimeout = 5000
                 conn.readTimeout = 10000
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
                 if (conn.responseCode != 200) {
-                    conn.disconnect(); continue
+                    continue
                 }
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                conn.disconnect()
                 // 解析失败（如镜像返回 200 的错误页）也继续试下一个源
                 parse(body)?.let { return it }
             } catch (_: Exception) {
+            } finally {
+                conn?.disconnect()
             }
         }
         return null
@@ -114,12 +118,17 @@ object Updater {
         val tag = m["tag_name"]?.toString() ?: return null
         var apkUrl: String? = null
         var apkSize = 0L
+        var apkSha256: String? = null
         for (a in m["assets"] as? List<*> ?: emptyList<Any>()) {
             val am = a as? Map<String, Any?> ?: continue
             val name = am["name"]?.toString() ?: continue
             if (name.endsWith(".apk", ignoreCase = true)) {
                 apkUrl = am["browser_download_url"]?.toString()
-                apkSize = (am["size"] as? Double)?.toLong() ?: 0L
+                apkSize = (am["size"] as? Number)?.toLong() ?: 0L
+                val digest = am["digest"] as? String
+                apkSha256 = UpdateMetadata.sha256From(digest)
+                // A malformed checksum must not silently turn verification off.
+                if (digest?.startsWith("sha256:", ignoreCase = true) == true && apkSha256 == null) return null
             }
         }
         if (apkUrl == null) return null
@@ -136,6 +145,7 @@ object Updater {
             apkSize = apkSize,
             versionCode = code,
             versionName = parts,
+            apkSha256 = apkSha256,
         )
     }
 
@@ -164,17 +174,26 @@ object Updater {
         val dir = File(ctx.getExternalFilesDir(null), "update").apply { mkdirs() }
         val dest = File(dir, "closedloop-${rel.tag}.apk")
         for (prefix in DL_SOURCES) {
+            // A cancelled connection must not restart from another source after its timeout.
+            if (!onProgress(0L, rel.apkSize)) {
+                dest.delete(); return null
+            }
+            var conn: HttpURLConnection? = null
             try {
                 onSource?.invoke(sourceLabel(prefix))
                 if (dest.exists()) dest.delete()
-                val conn = URL(prefix + rel.apkUrl).openConnection() as HttpURLConnection
+                conn = URL(prefix + rel.apkUrl).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = true
                 conn.connectTimeout = 8000
                 conn.readTimeout = 30000
+                conn.setRequestProperty("Accept-Encoding", "identity")
                 if (conn.responseCode != 200) {
-                    conn.disconnect(); continue
+                    continue
                 }
-                val total = if (conn.contentLengthLong > 0) conn.contentLengthLong else rel.apkSize
+                val total = if (rel.apkSize > 0) rel.apkSize else conn.contentLengthLong.coerceAtLeast(0)
+                if (!onProgress(0L, total)) {
+                    dest.delete(); return null
+                }
                 var cancelled = false
                 var done = 0L
                 dest.outputStream().use { out ->
@@ -185,23 +204,25 @@ object Updater {
                             if (n < 0) break
                             out.write(buf, 0, n)
                             done += n
+                            if (total > 0 && done > total) throw java.io.IOException("Asset exceeds published size")
                             if (!onProgress(done, total)) {
                                 cancelled = true; break
                             }
                         }
                     }
                 }
-                conn.disconnect()
                 if (cancelled) {
                     dest.delete(); return null
                 }
-                // 完整性校验：字数对不上说明这条线被截断了，换下一个源重来
-                if (total > 0 && done < total) {
+                // A mirror's self-consistent HTML response is not a successful APK download.
+                if (!UpdateMetadata.verifyApk(dest, total, rel.apkSha256)) {
                     dest.delete(); continue
                 }
-                if (dest.length() > 0) return dest
+                return dest
             } catch (_: Exception) {
                 dest.delete()
+            } finally {
+                conn?.disconnect()
             }
         }
         return null

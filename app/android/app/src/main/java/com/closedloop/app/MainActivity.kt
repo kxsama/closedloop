@@ -81,6 +81,10 @@ class MainActivity : AppCompatActivity() {
     /** 下载进度框（当前实例的）；状态本体在 Updater.DownloadState，切后台回来重挂 */
     private var dlDialog: AlertDialog? = null
     private var dlPolling = false
+    private var downloadPoll: Runnable? = null
+    private var resumed = false
+    private var checkingUpdate = false
+    private var pendingUpdateCheck: Pair<Boolean, Updater.Release?>? = null
 
     private val refresher = object : Runnable {
         override fun run() {
@@ -143,6 +147,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
+        MonitorService.refreshPlans(this)
+        consumeUpdateCheck()
         // 下载中切后台再回来 → 重挂进度框（状态在 DownloadState，丢不了）
         if (Updater.DownloadState.running) showDownloadDialog()
         // 授权页回来了且已允许 → 自动接着装
@@ -160,7 +167,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        resumed = false
         handler.removeCallbacks(refresher)
+        downloadPoll?.let { handler.removeCallbacks(it) }
+        downloadPoll = null
+        dlPolling = false
+        // Background downloads keep running; only the visible progress UI stops refreshing.
+        dlDialog?.setOnDismissListener(null)
+        dlDialog?.dismiss()
+        dlDialog = null
     }
 
     // ---------- 渲染 ----------
@@ -587,8 +602,7 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked ->
                 if (checked != p.enabled) {
                     PlanStore.updatePlan(this@MainActivity, p.copy(enabled = checked))
-                    // 先摘掉旧引擎，再让服务按新状态重建——否则暂停后它还会继续跑完今天这一场
-                    MonitorService.engines.remove(p.id)
+                    MonitorService.refreshPlans(this@MainActivity)
                     MonitorService.start(this@MainActivity)
                     onChange()
                 }
@@ -614,8 +628,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("删除「${p.name}」？")
             .setMessage("计划会从列表里消失。已经记下的历史账本不动——那些是发生过的事，不该被删掉。")
             .setPositiveButton("删除") { _, _ ->
-                PlanStore.deletePlan(this, p.id)
-                MonitorService.engines.remove(p.id)
+                MonitorService.deletePlan(this, p.id)
                 onDone()
                 refresh()
             }
@@ -623,11 +636,12 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showEarlyEndDialog(p: Plan) {        AlertDialog.Builder(this)
+    private fun showEarlyEndDialog(p: Plan) {
+        val date = LocalDate.now().toString()
+        AlertDialog.Builder(this)
             .setTitle("提前结束「${p.name}」？")
             .setItems(REASONS) { _, which ->
-                val eng = MonitorService.engines[p.id] ?: return@setItems
-                handleSettleActs(eng, eng.earlyEnd(REASONS[which]))
+                MonitorService.finishPlan(this, p.id, REASONS[which], date)
                 refresh()
             }
             .setNegativeButton("再想想", null)
@@ -640,17 +654,18 @@ class MainActivity : AppCompatActivity() {
         val eng = MonitorService.engines[pid] ?: run {
             MonitorService.pendingFusePlanId = null; return
         }
+        val date = eng.session.date
         fuseDialogShowing = true
         AlertDialog.Builder(this)
             .setTitle("熔断询问")
             .setMessage("「${eng.plan.name}」累计切走时间已达上限。还要吗？")
             .setPositiveButton("继续") { _, _ ->
-                eng.fuseContinue()
+                MonitorService.continuePlan(this, pid, date)
                 MonitorService.pendingFusePlanId = null
                 fuseDialogShowing = false
             }
             .setNegativeButton("今天算了") { _, _ ->
-                handleSettleActs(eng, eng.abandon())
+                MonitorService.finishPlan(this, pid, "熔断后主动结束", date)
                 MonitorService.pendingFusePlanId = null
                 fuseDialogShowing = false
                 refresh()
@@ -835,6 +850,7 @@ class MainActivity : AppCompatActivity() {
                                 chosen.toMutableList(), slots = draft.copySlots(), weekMode = draft.weekMode)
                         if (existing == null) PlanStore.addPlan(this@MainActivity, plan)
                         else PlanStore.updatePlan(this@MainActivity, plan)
+                        MonitorService.refreshPlans(this@MainActivity)
                         MonitorService.start(this@MainActivity)
                         editor.dismiss(); refresh()
                     }
@@ -1031,6 +1047,7 @@ class MainActivity : AppCompatActivity() {
      *  下载中改为"下载中"，点击即回到进度框。 */
     private fun updateBtnLabel(): String =
         if (Updater.DownloadState.running) "下载中… · 点击查看"
+        else if (checkingUpdate) "检查中…"
         else "v${localVersion()} · 更新"
 
     private fun localVersion(): String = try {
@@ -1043,21 +1060,33 @@ class MainActivity : AppCompatActivity() {
         if (Updater.DownloadState.running) {   // 别重复起下载——重挂进度框就行
             showDownloadDialog(); return
         }
+        if (checkingUpdate) return
+        checkingUpdate = true
         val btn = findViewById<TextView>(R.id.btnUpdate)
         btn.text = "检查中…"
         Thread {
             val rel = Updater.check()
             runOnUiThread {
-                btn.text = updateBtnLabel()
-                when {
-                    rel == null ->
-                        Toast.makeText(this, "检查失败：网络不通或 GitHub 访问受限", Toast.LENGTH_LONG).show()
-                    !Updater.newerThan(rel.versionName, Updater.localVersionName(this)) ->
-                        Toast.makeText(this, "已是最新版｜当前 v${localVersion()}", Toast.LENGTH_SHORT).show()
-                    else -> showUpdateDialog(rel)
-                }
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                pendingUpdateCheck = true to rel
+                consumeUpdateCheck()
             }
         }.start()
+    }
+
+    private fun consumeUpdateCheck() {
+        if (!resumed) return
+        val result = pendingUpdateCheck ?: return
+        pendingUpdateCheck = null
+        checkingUpdate = false
+        findViewById<TextView>(R.id.btnUpdate).text = updateBtnLabel()
+        val rel = result.second
+        when {
+            rel == null -> Toast.makeText(this, "检查失败：网络不通或 GitHub 访问受限", Toast.LENGTH_LONG).show()
+            !Updater.newerThan(rel.versionName, Updater.localVersionName(this)) ->
+                Toast.makeText(this, "已是最新版｜当前 v${localVersion()}", Toast.LENGTH_SHORT).show()
+            else -> showUpdateDialog(rel)
+        }
     }
 
     /** 发现新版本弹窗：只放一句话摘要（notes 第一段）——不再糊整篇 Markdown 文本墙；
@@ -1117,6 +1146,7 @@ class MainActivity : AppCompatActivity() {
      *  这样无论哪个 Activity 实例弹出它，都能显示同一份真实进度；
      *  下载结束（含取消/失败）自动收尾。 */
     private fun showDownloadDialog() {
+        if (!resumed) return
         if (dlDialog?.isShowing == true) return
         val s = Updater.DownloadState
         val pad = (16 * resources.displayMetrics.density).toInt()
@@ -1148,6 +1178,7 @@ class MainActivity : AppCompatActivity() {
         dlPolling = true
         val poll = object : Runnable {
             override fun run() {
+                if (!resumed) return
                 val st = Updater.DownloadState
                 if (dlDialog?.isShowing != true) {   // 用户已取消或框被收掉
                     dlDialog = null
@@ -1175,12 +1206,14 @@ class MainActivity : AppCompatActivity() {
                 handler.postDelayed(this, 400)
             }
         }
+        downloadPoll = poll
         handler.post(poll)
     }
 
     /** 处理已结束的下载结果（成功→安装/授权引导；失败→toast；取消→沉默）。
      *  completed 标志保证"本进程从没下载过"的空白态不会被误报成失败。 */
     private fun consumeFinishedDownload() {
+        if (!resumed) return
         val s = Updater.DownloadState
         if (s.running || !s.completed || s.handled) return
         val apk = s.result
@@ -1212,18 +1245,6 @@ class MainActivity : AppCompatActivity() {
     private fun installApk(apk: File) {
         if (!Updater.install(this, apk)) {
             Toast.makeText(this, "安装失败：文件可能损坏，请重试", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun handleSettleActs(eng: Engine, acts: List<Act>) {
-        for (a in acts) {
-            if (a is Act.Settle) {
-                // 落账统一走 Ledger（v0.9）：三处各写一份字段映射，迟早有处少一个字段
-                Ledger.record(this, eng, a)
-                PlanStore.clearSnooze(this, eng.plan.id)
-                MonitorService.persist(this)
-                Notify.nagCancel(this)
-            }
         }
     }
 

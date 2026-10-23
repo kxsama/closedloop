@@ -20,6 +20,8 @@ class ActionReceiver : BroadcastReceiver() {
 
     override fun onReceive(ctx: Context, intent: Intent) {
         val pid = intent.getStringExtra(EXTRA_PLAN) ?: return
+        val date = intent.getStringExtra(EXTRA_DATE)
+        if (date != null && date != java.time.LocalDate.now().toString()) return
         val now = System.currentTimeMillis() / 1000
 
         when (intent.action) {
@@ -30,18 +32,7 @@ class ActionReceiver : BroadcastReceiver() {
             }
 
             ACTION_GIVE_UP -> {
-                val eng = MonitorService.engines[pid] ?: return
-                if (eng.session.state == SState.SETTLED) {
-                    Notify.cancelRemind(ctx, pid)
-                    return
-                }
-                for (a in eng.giveUp(REASON_GIVE_UP)) {
-                    if (a is Act.Settle) Ledger.record(ctx, eng, a)
-                }
-                PlanStore.clearSnooze(ctx, pid)
-                MonitorService.persist(ctx)
-                Notify.cancelRemind(ctx, pid)
-                Notify.nagCancel(ctx)
+                MonitorService.finishPlan(ctx, pid, REASON_GIVE_UP, date)
             }
         }
         // An action may arrive during a slow idle tick; apply its visible state promptly.
@@ -52,6 +43,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val ACTION_SNOOZE = "com.closedloop.app.SNOOZE"
         const val ACTION_GIVE_UP = "com.closedloop.app.GIVE_UP"
         const val EXTRA_PLAN = "planId"
+        const val EXTRA_DATE = "sessionDate"
 
         /** 静音 15 分钟：短到不至于把今天的计划整条弄没，长到够处理完手里的事 */
         const val SNOOZE_SEC = 15 * 60L

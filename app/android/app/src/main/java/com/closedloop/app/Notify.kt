@@ -113,7 +113,10 @@ object Notify {
             planKey.hashCode() * 31 + slot,
             Intent(ctx, ActionReceiver::class.java).apply {
                 this.action = action
+                // Extras alone don't distinguish PendingIntents across recurring dates.
+                data = android.net.Uri.parse("closedloop://plan/$planKey/${java.time.LocalDate.now()}/$slot")
                 putExtra(ActionReceiver.EXTRA_PLAN, planKey)
+                putExtra(ActionReceiver.EXTRA_DATE, java.time.LocalDate.now().toString())
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )

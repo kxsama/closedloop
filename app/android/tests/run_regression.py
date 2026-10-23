@@ -39,8 +39,10 @@ with tempfile.TemporaryDirectory(prefix="closedloop-regression-") as tmp:
         java, "-cp", os.pathsep.join(map(str, compiler_cp)),
         "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect",
         "-jvm-target", "17", "-classpath", str(stdlib), "-d", str(result),
-        str(source_dir / "Engine.kt"), str(source_dir / "MonitorCadence.kt"), str(source_dir / "ScheduleDraft.kt"),
-        str(root / "tests/MonitorRegression.kt"),
+        *[str(source_dir / name) for name in (
+            "Engine.kt", "MonitorCadence.kt", "ScheduleDraft.kt", "SessionLifecycle.kt", "UpdateMetadata.kt",
+        )],
+        *map(str, sorted((root / "tests").glob("*Regression.kt"))),
     ], check=True)
     subprocess.run([
         java, "-cp", os.pathsep.join(map(str, [result, stdlib])),

@@ -134,6 +134,7 @@ object PlanStore {
     }
 
     /** 账本：按日期存结算记录列表。 */
+    @Synchronized
     fun appendLedger(ctx: Context, date: String, record: Map<String, Any?>) {
         val key = KEY_LEDGER_PREFIX + date
         val json = pref(ctx).getString(key, null)
@@ -143,6 +144,10 @@ object PlanStore {
         } catch (e: Exception) {
             mutableListOf()
         }
+        // This list belongs only to KEY_LEDGER_PREFIX + date. Recovery can retry;
+        // preserve the original entry rather than append the same day's session twice.
+        val planId = record["planId"]
+        if (planId != null && list.any { it["planId"] == planId }) return
         list.add(record)
         pref(ctx).edit().putString(key, gson.toJson(list)).apply()
     }

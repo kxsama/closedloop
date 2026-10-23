@@ -193,5 +193,8 @@ fun main() {
         e.tick(t0 + 83, "reader", false)
         check(e.session.effectiveSec == before + 3)
     }
+    passed += runEngineTimingRegression()
+    passed += runSessionLifecycleRegression()
+    passed += runUpdateRegression()
     println("$passed regression checks passed")
 }

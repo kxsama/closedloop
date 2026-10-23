@@ -83,6 +83,7 @@ data class Session(
     var contDevSec: Double = 0.0,
     var lastTick: Long? = null,
     var lastObserved: Boolean = false, // Unknown/screen-off time is never credited on return.
+    var planSnapshot: Plan? = null, // Preserve the actual day's name and target for later settlement.
     var recheckAt: Long = 0L,
     var level: Int = 0,
     var fused: Boolean = false,
@@ -117,6 +118,13 @@ class Engine(
     session: Session? = null,
 ) {
     val session = session ?: Session(plan.id, today.toString())
+
+    init {
+        this.session.planSnapshot = plan.copy(
+            packages = plan.packages.toMutableList(),
+            slots = plan.slots?.mapValues { it.value.copy() }?.toMutableMap(),
+        )
+    }
 
     companion object {
         const val GRACE_SEC = 60L           // 去抖宽限
@@ -176,13 +184,17 @@ class Engine(
         }
 
         val last = s.lastTick
-        if (last != null && now - last > GAP_SEC) {
-            s.notObserved.add(last to now)
+        if (last != null && (now < last || now - last > GAP_SEC)) {
+            // A wall-clock correction must never subtract credited time or leave a
+            // deviation anchored in the future. Resume observation from this tick.
+            if (now > last) {
+                s.notObserved.add(last to now)
+                acts.add(Act.Gap(last, now))
+            }
             s.curDevStart = null
             s.devConfirmed = false
             s.contDevSec = 0.0
             s.lastObserved = false
-            acts.add(Act.Gap(last, now))
         }
 
         val delta = if (last != null && s.lastObserved) (now - last).toDouble() else 0.0
@@ -231,7 +243,9 @@ class Engine(
                     // 若 effectiveSec == 0，这是"到点没开始"而不是中途毛刺，不能补记；
                     // 否则"晚到 1 分钟"会被宽限规则错误地整段记为有效（v0.4 实测抓出）。
                     if (s.effectiveSec > 0) {
-                        s.effectiveSec += now - devStart
+                        // delta is added below for the current interval. Only fill
+                        // earlier grace intervals here, or every return counts twice.
+                        s.effectiveSec += maxOf(0.0, (now - devStart).toDouble() - delta)
                     }
                     s.curDevStart = null
                 }
@@ -290,7 +304,7 @@ class Engine(
 
     fun earlyEnd(reason: String): List<Act> = settle(RESULT_EARLY_END, reason)
 
-    fun abandon(): List<Act> = settle(RESULT_UNFINISHED)
+    fun abandon(reason: String? = null): List<Act> = settle(RESULT_UNFINISHED, reason)
 
     /**
      * 用户主动放弃这一场（v0.9：通知上的"今天不做了"）。
